@@ -11,9 +11,7 @@ import {
   Phone,
   User,
   UtensilsCrossed,
-  ChefHat,
   CheckCircle2,
-  ExternalLink,
   Printer,
   ChevronRight,
 } from "lucide-react";
@@ -104,16 +102,16 @@ export function OrderPageClient({ order, currencyCode = "USD", locale = "en-US" 
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
-      <div className="px-4 md:px-6 py-4 border-b border-border flex items-start justify-between gap-4 flex-wrap">
-        <div>
+      <div className="px-4 md:px-6 py-4 border-b border-border flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
           <Link
             href="/dashboard/platform/orders"
             className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mb-2"
           >
             <ArrowLeft size={12} /> Back to orders
           </Link>
-          <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-2xl font-semibold tracking-tight">
+          <div className="flex items-center gap-2 sm:gap-3 flex-wrap min-w-0">
+            <h1 className="text-2xl font-semibold tracking-tight break-all sm:break-normal">
               Order #{order.orderNumber}
             </h1>
             <span className="text-[10px] uppercase tracking-wider border border-border rounded-full px-2 py-0.5 text-muted-foreground">
@@ -125,30 +123,30 @@ export function OrderPageClient({ order, currencyCode = "USD", locale = "en-US" 
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 lg:justify-end lg:shrink-0">
           <Button
             variant="outline"
             size="sm"
-            className="h-8"
+            className="h-9 sm:h-8 px-3 text-xs"
             asChild
           >
             <Link href="/dashboard/platform/kds" className="inline-flex items-center gap-1.5">
-              <ChefHat size={13} /> KDS
-              <ExternalLink size={11} />
+              <UtensilsCrossed size={13} /> KDS
             </Link>
           </Button>
           <Button
             variant="outline"
             size="icon"
-            className="h-8 w-8"
+            className="h-9 w-9 sm:h-8 sm:w-8"
+            aria-label="Print order"
           >
             <Printer size={14} />
           </Button>
           <Select value={currentStatus} onValueChange={handleStatusChange} disabled={isPending}>
-            <SelectTrigger className="h-8 min-w-[155px] text-xs px-3 rounded-full [&>svg]:h-3 [&>svg]:w-3">
-              <div className="flex items-center gap-2">
+            <SelectTrigger className="h-9 sm:h-8 w-[calc(50%-0.25rem)] min-w-[150px] flex-1 sm:w-auto sm:flex-none sm:min-w-[155px] text-xs px-3 rounded-full [&>svg]:h-3 [&>svg]:w-3">
+              <div className="flex items-center gap-2 min-w-0">
                 <StatusDot status={currentStatus as keyof typeof statusConfig} size="sm" />
-                <span className="uppercase tracking-wider text-[11px] font-semibold">{activeStatus.label}</span>
+                <span className="uppercase tracking-wider text-[11px] font-semibold truncate">{activeStatus.label}</span>
               </div>
             </SelectTrigger>
             <SelectContent>
@@ -165,7 +163,7 @@ export function OrderPageClient({ order, currencyCode = "USD", locale = "en-US" 
           {suggestedNextStatus && nextActionLabel && (
             <Button
               size="sm"
-              className="h-8 text-xs"
+              className="h-9 sm:h-8 px-3 text-xs flex-1 sm:flex-none whitespace-nowrap"
               onClick={() => handleStatusChange(suggestedNextStatus)}
               disabled={isPending}
             >
