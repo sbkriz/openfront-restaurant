@@ -9,8 +9,7 @@ Openfront Restaurant is a specialized version of the Openfront platform designed
 
 ## Demo
 
-https://github.com/user-attachments/assets/da9b16f0-1f47-4d00-8499-e1df3c9c41b1
-
+https://github.com/user-attachments/assets/e3a061fb-3c03-4b89-81f0-4aa973c26556
 
 | | |
 |---|---|
