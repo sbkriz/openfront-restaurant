@@ -56,21 +56,37 @@ const GET_RESERVATIONS = gql`
   }
 `
 
-const CREATE_RESERVATION = gql`
-  mutation CreateReservation($data: ReservationCreateInput!) {
-    createReservation(data: $data) { id }
+const UPSERT_RESERVATION = gql`
+  mutation UpsertReservation(
+    $reservationId: ID
+    $customerName: String!
+    $customerPhone: String
+    $customerEmail: String
+    $reservationDate: String!
+    $partySize: Int!
+    $duration: Int
+    $status: String
+    $specialRequests: String
+    $assignedTableId: ID
+  ) {
+    upsertReservation(
+      reservationId: $reservationId
+      customerName: $customerName
+      customerPhone: $customerPhone
+      customerEmail: $customerEmail
+      reservationDate: $reservationDate
+      partySize: $partySize
+      duration: $duration
+      status: $status
+      specialRequests: $specialRequests
+      assignedTableId: $assignedTableId
+    ) { success error }
   }
 `
 
-const UPDATE_RESERVATION = gql`
-  mutation UpdateReservation($id: ID!, $data: ReservationUpdateInput!) {
-    updateReservation(where: { id: $id }, data: $data) { id status }
-  }
-`
-
-const DELETE_RESERVATION = gql`
-  mutation DeleteReservation($id: ID!) {
-    deleteReservation(where: { id: $id }) { id }
+const UPDATE_RESERVATION_STATUS = gql`
+  mutation UpdateReservationStatus($reservationId: ID!, $action: String!, $tableId: ID) {
+    updateReservationStatus(reservationId: $reservationId, action: $action, tableId: $tableId) { success error }
   }
 `
 
@@ -134,6 +150,7 @@ export function ReservationsPage() {
   const [form, setForm] = useState({ ...emptyForm })
   const [saving, setSaving] = useState(false)
   const [activeStatusFilter, setActiveStatusFilter] = useState('all')
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const fetchData = useCallback(async () => {
     try {
@@ -192,7 +209,8 @@ export function ReservationsPage() {
       const [hour, minute] = form.reservationTime.split(':').map(Number)
       const dt = new Date(year, month - 1, day, hour, minute, 0)
 
-      const data: any = {
+      const res: any = await request('/api/graphql', UPSERT_RESERVATION, {
+        reservationId: editingId,
         customerName: form.customerName,
         customerPhone: form.customerPhone || null,
         customerEmail: form.customerEmail || null,
@@ -201,35 +219,56 @@ export function ReservationsPage() {
         duration: parseInt(form.duration) || 90,
         status: form.status,
         specialRequests: form.specialRequests || null,
-      }
-      if (form.assignedTableId) {
-        data.assignedTable = { connect: { id: form.assignedTableId } }
+        assignedTableId: form.assignedTableId || null,
+      })
+
+      if (!res?.upsertReservation?.success) {
+        throw new Error(res?.upsertReservation?.error || 'Unable to save reservation')
       }
 
-      if (editingId) {
-        await request('/api/graphql', UPDATE_RESERVATION, { id: editingId, data })
-      } else {
-        await request('/api/graphql', CREATE_RESERVATION, { data })
-      }
-
+      setActionError(null)
       setDialogOpen(false)
       fetchData()
-    } catch (err) {
+    } catch (err: any) {
+      setActionError(err?.message || 'Unable to save reservation')
       console.error(err)
     } finally {
       setSaving(false)
     }
   }
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Delete this reservation?')) return
-    await request('/api/graphql', DELETE_RESERVATION, { id })
-    fetchData()
+  const handleCancelReservation = async (id: string) => {
+    if (!confirm('Cancel this reservation?')) return
+    await updateReservationAction(id, 'cancel')
+  }
+
+  const updateReservationAction = async (id: string, action: string, tableId?: string | null) => {
+    try {
+      const res: any = await request('/api/graphql', UPDATE_RESERVATION_STATUS, {
+        reservationId: id,
+        action,
+        tableId: tableId || null,
+      })
+      if (!res?.updateReservationStatus?.success) {
+        throw new Error(res?.updateReservationStatus?.error || 'Unable to update reservation')
+      }
+      setActionError(null)
+      fetchData()
+    } catch (err: any) {
+      setActionError(err?.message || 'Unable to update reservation')
+    }
   }
 
   const handleStatusChange = async (id: string, status: string) => {
-    await request('/api/graphql', UPDATE_RESERVATION, { id, data: { status } })
-    fetchData()
+    const actionByStatus: Record<string, string> = {
+      pending: 'pending',
+      confirmed: 'confirm',
+      seated: 'seat',
+      completed: 'complete',
+      cancelled: 'cancel',
+      no_show: 'no_show',
+    }
+    await updateReservationAction(id, actionByStatus[status] || 'confirm')
   }
 
   const navigateDay = (delta: number) => {
@@ -260,6 +299,12 @@ export function ReservationsPage() {
           { type: 'page', label: 'Reservations' },
         ]}
       />
+
+      {actionError ? (
+        <div className="mx-4 md:mx-6 mt-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
+          {actionError}
+        </div>
+      ) : null}
 
       <div className="flex flex-col h-full">
         {/* Header */}
@@ -434,6 +479,38 @@ export function ReservationsPage() {
                             ))}
                           </select>
 
+                          {['pending', 'confirmed'].includes(r.status || 'pending') ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-[11px]"
+                              onClick={() => updateReservationAction(r.id, 'seat', r.assignedTable?.id || null)}
+                              disabled={!r.assignedTable?.id}
+                            >
+                              Seat
+                            </Button>
+                          ) : null}
+                          {r.status === 'seated' ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 px-2 text-[11px]"
+                              onClick={() => updateReservationAction(r.id, 'complete')}
+                            >
+                              Complete
+                            </Button>
+                          ) : null}
+                          {['pending', 'confirmed'].includes(r.status || 'pending') ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-[11px] text-orange-600 hover:text-orange-700"
+                              onClick={() => updateReservationAction(r.id, 'no_show')}
+                            >
+                              No-show
+                            </Button>
+                          ) : null}
+
                           <button
                             onClick={() => openEdit(r)}
                             className="w-7 h-7 rounded border border-border flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-muted"
@@ -441,7 +518,7 @@ export function ReservationsPage() {
                             <Edit2 size={12} />
                           </button>
                           <button
-                            onClick={() => handleDelete(r.id)}
+                            onClick={() => handleCancelReservation(r.id)}
                             className="w-7 h-7 rounded border border-border flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50 hover:border-red-200 hover:text-red-600 dark:hover:bg-red-950/30"
                           >
                             <Trash2 size={12} />
@@ -477,7 +554,7 @@ export function ReservationsPage() {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Phone</Label>
+                <Label className="text-xs text-muted-foreground">Phone *</Label>
                 <Input
                   value={form.customerPhone}
                   onChange={e => setForm(f => ({ ...f, customerPhone: e.target.value }))}
@@ -590,7 +667,7 @@ export function ReservationsPage() {
                 size="sm"
                 className="flex-1 h-9"
                 onClick={handleSave}
-                disabled={saving || !form.customerName || !form.reservationDate}
+                disabled={saving || !form.customerName || !form.customerPhone || !form.reservationDate}
               >
                 {saving ? 'Saving…' : editingId ? 'Save Changes' : 'Create'}
               </Button>

@@ -255,7 +255,7 @@ const Contact = ({
             className="h-12 w-full rounded-full bg-primary px-6 text-sm font-medium text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
           >
             {isLoading ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
-            Continue to delivery
+            Continue
           </Button>
         </div>
       ) : isComplete ? (

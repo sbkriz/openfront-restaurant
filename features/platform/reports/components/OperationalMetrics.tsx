@@ -30,7 +30,8 @@ export function OperationalMetrics({
   serverCount,
 }: OperationalMetricsProps) {
   const occupancyPercent = totalTables > 0 ? (tableOccupancy / totalTables) * 100 : 0;
-  const ticketOk = averageTicketTime <= targetTicketTime;
+  const hasTicketTime = averageTicketTime > 0;
+  const ticketOk = !hasTicketTime || averageTicketTime <= targetTicketTime;
   const voidOk = voidRate <= 2;
 
   return (
@@ -69,11 +70,11 @@ export function OperationalMetrics({
             <p className="text-[11px] uppercase tracking-wider">Avg Ticket Time</p>
           </div>
           <div className="flex items-baseline gap-1.5">
-            <p className={cn("text-xl font-semibold", ticketOk ? "" : "text-amber-600")}>{formatNumber(averageTicketTime)}</p>
+            <p className={cn("text-xl font-semibold", ticketOk ? "" : "text-amber-600")}>{hasTicketTime ? formatNumber(averageTicketTime) : '—'}</p>
             <p className="text-xs text-muted-foreground">min</p>
           </div>
           <p className={cn("text-xs mt-1 font-medium", ticketOk ? "text-emerald-600" : "text-amber-600")}>
-            {ticketOk ? "On target" : "Slow"} · target {targetTicketTime}m
+            {!hasTicketTime ? "No completed tickets" : ticketOk ? "On target" : "Slow"} · target {targetTicketTime}m
           </p>
         </div>
 
@@ -116,7 +117,7 @@ export function OperationalMetrics({
         <Users size={13} className="text-muted-foreground" />
         <span className="text-xs text-muted-foreground uppercase tracking-wider">Active Staff</span>
         <span className="text-sm font-semibold ml-2">{serverCount}</span>
-        <span className="text-xs text-muted-foreground">servers on floor</span>
+        <span className="text-xs text-muted-foreground">floor staff clocked in</span>
       </div>
     </div>
   );

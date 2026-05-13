@@ -96,29 +96,26 @@ const GET_AVAILABLE_TABLES = gql`
 `
 
 const CREATE_WAITLIST_ENTRY = gql`
-  mutation CreateWaitlistEntry($data: WaitlistEntryCreateInput!) {
-    createWaitlistEntry(data: $data) {
-      id
-      customerName
-    }
+  mutation CreateWaitlistGuest(
+    $customerName: String!
+    $phoneNumber: String!
+    $partySize: Int!
+    $quotedWaitTime: Int
+    $notes: String
+  ) {
+    createWaitlistGuest(
+      customerName: $customerName
+      phoneNumber: $phoneNumber
+      partySize: $partySize
+      quotedWaitTime: $quotedWaitTime
+      notes: $notes
+    ) { success error }
   }
 `
 
-const UPDATE_WAITLIST_ENTRY = gql`
-  mutation UpdateWaitlistEntry($id: ID!, $data: WaitlistEntryUpdateInput!) {
-    updateWaitlistEntry(where: { id: $id }, data: $data) {
-      id
-      status
-    }
-  }
-`
-
-const UPDATE_TABLE_STATUS = gql`
-  mutation UpdateTableStatus($id: ID!, $status: String!) {
-    updateTable(where: { id: $id }, data: { status: $status }) {
-      id
-      status
-    }
+const UPDATE_WAITLIST_STATUS = gql`
+  mutation UpdateWaitlistStatus($entryId: ID!, $action: String!, $tableId: ID) {
+    updateWaitlistStatus(entryId: $entryId, action: $action, tableId: $tableId) { success error }
   }
 `
 
@@ -168,6 +165,7 @@ export function WaitlistPage() {
   const [seatDialogOpen, setSeatDialogOpen] = useState(false)
   const [selectedEntry, setSelectedEntry] = useState<WaitlistEntry | null>(null)
   const [selectedTableId, setSelectedTableId] = useState<string>('')
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const [newEntry, setNewEntry] = useState({
     customerName: '',
@@ -206,36 +204,40 @@ export function WaitlistPage() {
   const handleAddEntry = async () => {
     if (!newEntry.customerName || !newEntry.phoneNumber) return;
     try {
-      await request('/api/graphql', CREATE_WAITLIST_ENTRY, {
-        data: {
-          customerName: newEntry.customerName,
-          phoneNumber: newEntry.phoneNumber,
-          partySize: newEntry.partySize,
-          quotedWaitTime: newEntry.quotedWaitTime,
-          notes: newEntry.notes || null,
-          status: 'waiting',
-        },
+      const res: any = await request('/api/graphql', CREATE_WAITLIST_ENTRY, {
+        customerName: newEntry.customerName,
+        phoneNumber: newEntry.phoneNumber,
+        partySize: newEntry.partySize,
+        quotedWaitTime: newEntry.quotedWaitTime,
+        notes: newEntry.notes || null,
       })
+      if (!res?.createWaitlistGuest?.success) {
+        throw new Error(res?.createWaitlistGuest?.error || 'Unable to add guest')
+      }
+      setActionError(null)
       setAddDialogOpen(false)
       setNewEntry({ customerName: '', phoneNumber: '', partySize: 2, quotedWaitTime: 15, notes: '' })
       fetchWaitlist()
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error adding entry:', err)
+      setActionError(err?.message || 'Unable to add guest')
     }
   }
 
   const handleNotify = async (entry: WaitlistEntry) => {
     try {
-      await request('/api/graphql', UPDATE_WAITLIST_ENTRY, {
-        id: entry.id,
-        data: { 
-          status: 'notified',
-          notifiedAt: new Date().toISOString(),
-        },
+      const res: any = await request('/api/graphql', UPDATE_WAITLIST_STATUS, {
+        entryId: entry.id,
+        action: 'notify',
       })
+      if (!res?.updateWaitlistStatus?.success) {
+        throw new Error(res?.updateWaitlistStatus?.error || 'Unable to notify guest')
+      }
+      setActionError(null)
       fetchWaitlist()
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error notifying:', err)
+      setActionError(err?.message || 'Unable to notify guest')
     }
   }
 
@@ -249,51 +251,57 @@ export function WaitlistPage() {
     if (!selectedEntry || !selectedTableId) return
 
     try {
-      await Promise.all([
-        request('/api/graphql', UPDATE_WAITLIST_ENTRY, {
-          id: selectedEntry.id,
-          data: {
-            status: 'seated',
-            seatedAt: new Date().toISOString(),
-            table: { connect: { id: selectedTableId } },
-          },
-        }),
-        request('/api/graphql', UPDATE_TABLE_STATUS, {
-          id: selectedTableId,
-          status: 'occupied',
-        }),
-      ])
+      const res: any = await request('/api/graphql', UPDATE_WAITLIST_STATUS, {
+        entryId: selectedEntry.id,
+        action: 'seat',
+        tableId: selectedTableId,
+      })
+      if (!res?.updateWaitlistStatus?.success) {
+        throw new Error(res?.updateWaitlistStatus?.error || 'Unable to seat guest')
+      }
+      setActionError(null)
       setSeatDialogOpen(false)
       setSelectedEntry(null)
       setSelectedTableId('')
       fetchWaitlist()
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error seating:', err)
+      setActionError(err?.message || 'Unable to seat guest')
     }
   }
 
   const handleCancel = async (entry: WaitlistEntry) => {
     if (!confirm('Cancel this waitlist entry?')) return;
     try {
-      await request('/api/graphql', UPDATE_WAITLIST_ENTRY, {
-        id: entry.id,
-        data: { status: 'cancelled' },
+      const res: any = await request('/api/graphql', UPDATE_WAITLIST_STATUS, {
+        entryId: entry.id,
+        action: 'cancel',
       })
+      if (!res?.updateWaitlistStatus?.success) {
+        throw new Error(res?.updateWaitlistStatus?.error || 'Unable to cancel guest')
+      }
+      setActionError(null)
       fetchWaitlist()
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error cancelling:', err)
+      setActionError(err?.message || 'Unable to cancel guest')
     }
   }
 
   const handleNoShow = async (entry: WaitlistEntry) => {
     try {
-      await request('/api/graphql', UPDATE_WAITLIST_ENTRY, {
-        id: entry.id,
-        data: { status: 'no_show' },
+      const res: any = await request('/api/graphql', UPDATE_WAITLIST_STATUS, {
+        entryId: entry.id,
+        action: 'no_show',
       })
+      if (!res?.updateWaitlistStatus?.success) {
+        throw new Error(res?.updateWaitlistStatus?.error || 'Unable to mark no show')
+      }
+      setActionError(null)
       fetchWaitlist()
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error marking no show:', err)
+      setActionError(err?.message || 'Unable to mark no show')
     }
   }
 
@@ -322,6 +330,12 @@ export function WaitlistPage() {
   return (
     <div className="flex flex-col h-full">
       <PageBreadcrumbs items={breadcrumbs} />
+
+      {actionError ? (
+        <div className="mx-6 mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
+          {actionError}
+        </div>
+      ) : null}
 
       {/* Header */}
       <div className="px-6 py-6 border-b bg-gradient-to-br from-indigo-500/5 via-background to-blue-500/5">

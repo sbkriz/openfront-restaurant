@@ -4831,6 +4831,18 @@ type Mutation {
   initiatePaymentSession(cartId: ID!, paymentProviderId: String!): InitiatePaymentSessionResult
   completeActiveCart(cartId: ID!, paymentSessionId: ID): RestaurantOrder
   createPOSOrder(orderType: String!, guestCount: Int, tableIds: [ID!], isUrgent: Boolean, specialInstructions: String, items: [POSOrderItemInput!]!): RestaurantOrder
+  addServiceFloorItem(orderId: ID, tableId: ID!, menuItemId: ID!, quantity: Int!, courseNumber: Int, seatNumber: Int, specialInstructions: String): RestaurantOrder
+  updateServiceFloorItem(orderItemId: ID!, quantity: Int, courseNumber: Int, seatNumber: Int, specialInstructions: String, voidReason: String): RestaurantOrder
+  updateServiceFloorTableStatus(tableId: ID!, status: String!): ServiceFloorMutationResult
+  updateServiceFloorCheckStatus(orderId: ID!, action: String!): ServiceFloorMutationResult
+  createWaitlistGuest(customerName: String!, phoneNumber: String!, partySize: Int!, quotedWaitTime: Int, notes: String): WaitlistMutationResult
+  updateWaitlistStatus(entryId: ID!, action: String!, tableId: ID): WaitlistMutationResult
+  upsertReservation(reservationId: ID, customerName: String!, customerPhone: String, customerEmail: String, reservationDate: String!, partySize: Int!, duration: Int, status: String, specialRequests: String, assignedTableId: ID): ReservationMutationResult
+  updateReservationStatus(reservationId: ID!, action: String!, tableId: ID): ReservationMutationResult
+  upsertShift(shiftId: ID, staffId: ID, role: String!, startTime: String!, endTime: String!, hourlyRate: String): ShiftMutationResult
+  updateShiftStatus(shiftId: ID!, action: String!): ShiftMutationResult
+  createTipPoolLedger(date: String!, tipPoolType: String!, cashTips: String!, creditTips: String!): TipPoolMutationResult
+  updateTipPoolStatus(tipPoolId: ID!, action: String!): TipPoolMutationResult
   transferTable(orderId: String!, fromTableId: String!, toTableId: String!): TableManagementResult
   combineTables(orderId: String!, tableIds: [String!]!): TableManagementResult
   fireCourse(courseId: String!): CourseManagementResult
@@ -5195,6 +5207,31 @@ type InitiatePaymentSessionResult {
 }
 
 type TableManagementResult {
+  success: Boolean!
+  error: String
+}
+
+type ServiceFloorMutationResult {
+  success: Boolean!
+  error: String
+}
+
+type WaitlistMutationResult {
+  success: Boolean!
+  error: String
+}
+
+type ReservationMutationResult {
+  success: Boolean!
+  error: String
+}
+
+type ShiftMutationResult {
+  success: Boolean!
+  error: String
+}
+
+type TipPoolMutationResult {
   success: Boolean!
   error: String
 }

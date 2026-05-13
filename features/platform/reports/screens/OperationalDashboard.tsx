@@ -34,14 +34,28 @@ export async function OperationalDashboard() {
     const voidRate = (cancelledOrders / totalRecentOrders) * 100;
 
     const recentOrders = metrics?.recentOrders || [];
-    let averageTicketTime = 15;
-    if (recentOrders.length > 0) {
-      averageTicketTime = 12 + Math.random() * 8;
-    }
+    const recentTickets = metrics?.recentTickets || [];
+    const completedTicketDurations = recentTickets
+      .map((ticket: any) => {
+        if (!ticket.firedAt || !ticket.completedAt) return null;
+        const fired = new Date(ticket.firedAt).getTime();
+        const completed = new Date(ticket.completedAt).getTime();
+        if (Number.isNaN(fired) || Number.isNaN(completed) || completed <= fired) return null;
+        return Math.round((completed - fired) / 60000);
+      })
+      .filter((duration: number | null): duration is number => duration !== null);
+    const averageTicketTime = completedTicketDurations.length > 0
+      ? completedTicketDurations.reduce((sum: number, minutes: number) => sum + minutes, 0) / completedTicketDurations.length
+      : 0;
 
     const todayOrders = salesData?.restaurantOrders || [];
     const completedToday = todayOrders.filter((o: any) => o.status === "completed");
-    const todayRevenue = completedToday.reduce((sum: number, o: any) => sum + parseFloat(o.total || 0), 0);
+    const todayRevenue = completedToday.reduce((sum: number, o: any) => sum + Number(o.total || 0), 0);
+    const coversToday = completedToday.reduce((sum: number, o: any) => sum + (o.guestCount || 1), 0);
+    const dineInTurns = completedToday.filter((o: any) => o.orderType === "dine_in").length;
+    const activeFloorStaff = metrics?.activeFloorStaff || 0;
+    const openReservations = metrics?.openReservations || 0;
+    const waitingGuests = metrics?.waitingGuests || 0;
 
     const kitchenLoad = ordersInKitchen > 10 ? "High" : ordersInKitchen > 5 ? "Moderate" : "Normal";
     const kitchenLoadColor = ordersInKitchen > 10 ? "text-red-600" : ordersInKitchen > 5 ? "text-amber-600" : "text-emerald-600";
@@ -80,7 +94,7 @@ export async function OperationalDashboard() {
           <div className="px-5 py-4">
             <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Today's Revenue</p>
             <p className="text-xl font-semibold mt-1">{formatCurrency(todayRevenue, currencyConfig)}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">{completedToday.length} completed orders</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{completedToday.length} completed orders · {coversToday} covers</p>
           </div>
           <div className="px-5 py-4">
             <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Active Orders</p>
@@ -113,7 +127,7 @@ export async function OperationalDashboard() {
             ordersInKitchen={ordersInKitchen}
             ordersReady={ordersReady}
             voidRate={voidRate}
-            serverCount={3}
+            serverCount={activeFloorStaff}
             currencyCode={currencyConfig.currencyCode}
             locale={currencyConfig.locale}
           />
@@ -132,7 +146,7 @@ export async function OperationalDashboard() {
                 </div>
                 <div className="flex items-center justify-between px-4 py-3">
                   <span className="text-sm text-muted-foreground">Table Turnover</span>
-                  <span className="text-sm font-medium text-emerald-600">On Track</span>
+                  <span className="text-sm font-medium text-emerald-600">{dineInTurns} turns today</span>
                 </div>
                 <div className="flex items-center justify-between px-4 py-3">
                   <span className="text-sm text-muted-foreground">Service Quality</span>
@@ -141,6 +155,10 @@ export async function OperationalDashboard() {
                 <div className="flex items-center justify-between px-4 py-3">
                   <span className="text-sm text-muted-foreground">Void Rate</span>
                   <span className="text-sm font-medium">{voidRate.toFixed(1)}%</span>
+                </div>
+                <div className="flex items-center justify-between px-4 py-3">
+                  <span className="text-sm text-muted-foreground">Host Stand</span>
+                  <span className="text-sm font-medium">{openReservations} active reservations · {waitingGuests} waiting</span>
                 </div>
               </div>
             </div>

@@ -20,7 +20,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Calendar as CalendarIcon, Plus, Clock, User, RefreshCw, ChevronLeft, ChevronRight, Briefcase, ArrowRight, UserPlus, Timer } from 'lucide-react'
+import { Calendar as CalendarIcon, Plus, RefreshCw, ChevronLeft, ChevronRight, Briefcase, UserPlus, Timer, XCircle } from 'lucide-react'
 import { gql, request } from 'graphql-request'
 import { PageBreadcrumbs } from "@/features/dashboard/components/PageBreadcrumbs"
 import { cn } from '@/lib/utils'
@@ -79,21 +79,29 @@ const GET_SHIFTS = gql`
   }
 `
 
-const CREATE_SHIFT = gql`
-  mutation CreateShift($data: ShiftCreateInput!) {
-    createShift(data: $data) { id }
+const UPSERT_SHIFT = gql`
+  mutation UpsertShift(
+    $shiftId: ID
+    $staffId: ID
+    $role: String!
+    $startTime: String!
+    $endTime: String!
+    $hourlyRate: String
+  ) {
+    upsertShift(
+      shiftId: $shiftId
+      staffId: $staffId
+      role: $role
+      startTime: $startTime
+      endTime: $endTime
+      hourlyRate: $hourlyRate
+    ) { success error }
   }
 `
 
-const UPDATE_SHIFT = gql`
-  mutation UpdateShift($id: ID!, $data: ShiftUpdateInput!) {
-    updateShift(where: { id: $id }, data: $data) { id }
-  }
-`
-
-const DELETE_SHIFT = gql`
-  mutation DeleteShift($id: ID!) {
-    deleteShift(where: { id: $id }) { id }
+const UPDATE_SHIFT_STATUS = gql`
+  mutation UpdateShiftStatus($shiftId: ID!, $action: String!) {
+    updateShiftStatus(shiftId: $shiftId, action: $action) { success error }
   }
 `
 
@@ -125,6 +133,7 @@ export function SchedulePage() {
   })
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingShift, setEditingShift] = useState<Shift | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const [form, setForm] = useState({
     staffId: '',
@@ -195,39 +204,44 @@ export function SchedulePage() {
       const startDateTime = new Date(`${form.date}T${form.startTime}:00`)
       const endDateTime = new Date(`${form.date}T${form.endTime}:00`)
 
-      const data: any = {
+      const res: any = await request('/api/graphql', UPSERT_SHIFT, {
+        shiftId: editingShift?.id || null,
+        staffId: form.staffId || null,
         startTime: startDateTime.toISOString(),
         endTime: endDateTime.toISOString(),
         role: form.role,
         hourlyRate: form.hourlyRate,
-        status: 'scheduled',
+      })
+
+      if (!res?.upsertShift?.success) {
+        throw new Error(res?.upsertShift?.error || 'Unable to save shift')
       }
 
-      if (form.staffId) {
-        data.staff = { connect: { id: form.staffId } }
-      }
-
-      if (editingShift) {
-        await request('/api/graphql', UPDATE_SHIFT, { id: editingShift.id, data })
-      } else {
-        await request('/api/graphql', CREATE_SHIFT, { data })
-      }
-
+      setActionError(null)
       setDialogOpen(false)
       fetchShifts()
-    } catch (err) {
+    } catch (err: any) {
+      setActionError(err?.message || 'Unable to save shift')
       console.error('Error saving shift:', err)
     }
   }
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Delete this shift?')) return
+  const updateShiftAction = async (id: string, action: 'cancel' | 'no_show' | 'start' | 'complete') => {
     try {
-      await request('/api/graphql', DELETE_SHIFT, { id })
+      const res: any = await request('/api/graphql', UPDATE_SHIFT_STATUS, { shiftId: id, action })
+      if (!res?.updateShiftStatus?.success) {
+        throw new Error(res?.updateShiftStatus?.error || 'Unable to update shift')
+      }
+      setActionError(null)
       fetchShifts()
-    } catch (err) {
-      console.error('Error deleting shift:', err)
+    } catch (err: any) {
+      setActionError(err?.message || 'Unable to update shift')
     }
+  }
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Cancel this shift?')) return
+    await updateShiftAction(id, 'cancel')
   }
 
   const getShiftsForDate = (date: Date): Shift[] => {
@@ -257,6 +271,12 @@ export function SchedulePage() {
   return (
     <div className="flex flex-col h-full bg-background">
       <PageBreadcrumbs items={breadcrumbs} />
+
+      {actionError ? (
+        <div className="mx-6 mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
+          {actionError}
+        </div>
+      ) : null}
 
       {/* Header */}
       <div className="px-6 py-6 border-b bg-gradient-to-br from-indigo-500/5 via-background to-blue-500/5">
@@ -338,9 +358,47 @@ export function SchedulePage() {
                                   <span>{formatTime(shift.startTime)}</span>
                                </div>
 
-                               <Badge className={cn("rounded-lg px-2 py-0.5 text-[8px] font-black uppercase tracking-widest border-none", roleConfig.bg, roleConfig.text)}>
-                                  {roleConfig.label}
-                               </Badge>
+                               <div className="flex items-center justify-between gap-2">
+                                  <Badge className={cn("rounded-lg px-2 py-0.5 text-[8px] font-black uppercase tracking-widest border-none", roleConfig.bg, roleConfig.text)}>
+                                    {roleConfig.label}
+                                  </Badge>
+                                  <Badge variant="outline" className="rounded-lg px-2 py-0.5 text-[8px] font-black uppercase tracking-widest">
+                                    {shift.status.replace('_', ' ')}
+                                  </Badge>
+                               </div>
+
+                               <div className="grid grid-cols-2 gap-1 pt-1 opacity-0 transition-opacity group-hover/shift:opacity-100">
+                                  {shift.status === 'scheduled' ? (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 rounded-xl text-[10px] font-bold"
+                                      onClick={(e) => { e.stopPropagation(); updateShiftAction(shift.id, 'start') }}
+                                    >
+                                      Start
+                                    </Button>
+                                  ) : null}
+                                  {shift.status === 'started' ? (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 rounded-xl text-[10px] font-bold"
+                                      onClick={(e) => { e.stopPropagation(); updateShiftAction(shift.id, 'complete') }}
+                                    >
+                                      Complete
+                                    </Button>
+                                  ) : null}
+                                  {shift.status === 'scheduled' ? (
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="h-7 rounded-xl text-[10px] font-bold text-orange-600 hover:text-orange-700"
+                                      onClick={(e) => { e.stopPropagation(); updateShiftAction(shift.id, 'no_show') }}
+                                    >
+                                      No-show
+                                    </Button>
+                                  ) : null}
+                               </div>
                             </CardContent>
                           </Card>
                         )
@@ -447,7 +505,7 @@ export function SchedulePage() {
               </Button>
               {editingShift && (
                 <Button variant="outline" size="icon" className="h-14 w-14 rounded-2xl border-2 text-rose-500 hover:bg-rose-50 hover:text-rose-600" onClick={() => { handleDelete(editingShift.id); setDialogOpen(false); }}>
-                  <RefreshCw className="size-5" />
+                  <XCircle className="size-5" />
                 </Button>
               )}
             </div>

@@ -178,19 +178,19 @@ export function HeroBanner({ menuHref, storeInfo, heroItems }: HeroBannerProps) 
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-4">
               {featuredItems.map((item, index) => (
-                <Link key={item.id} href={getMenuItemHref(item.id)} prefetch={false} className="group block h-full">
-                  <article className="storefront-surface-soft flex h-full items-center gap-4 overflow-hidden px-4 py-4 transition-colors hover:border-primary/30 hover:bg-card">
-                    <div className="relative size-20 shrink-0 overflow-hidden rounded-2xl bg-muted/40">
+                <Link key={item.id} href={getMenuItemHref(item.id)} prefetch={false} className="group block min-w-0 h-full">
+                  <article className="storefront-surface-soft flex h-full min-w-0 items-center gap-3 overflow-hidden px-3 py-4 transition-colors hover:border-primary/30 hover:bg-card sm:gap-4 sm:px-4 xl:flex-col xl:items-start">
+                    <div className="relative size-20 shrink-0 overflow-hidden rounded-2xl bg-muted/40 xl:size-full xl:aspect-square">
                       <HeroImage item={item} priority={index < 2} />
                     </div>
-                    <div className="min-w-0 flex-1">
-                      {item.categoryName ? <p className="text-xs font-medium text-primary">{item.categoryName}</p> : null}
+                    <div className="min-w-0 flex-1 xl:w-full">
+                      {item.categoryName ? <p className="truncate text-xs font-medium text-primary">{item.categoryName}</p> : null}
                       <h3 className="truncate font-medium text-foreground transition-colors group-hover:text-primary">{item.name}</h3>
                       <p className="mt-1 truncate text-sm text-muted-foreground">{item.description || "Prepared fresh to order."}</p>
                     </div>
-                    <span className="shrink-0 text-sm font-medium tabular-nums text-foreground">
+                    <span className="shrink-0 whitespace-nowrap text-sm font-medium tabular-nums text-foreground xl:self-end">
                       {formatCurrency(item.price, {
                         currencyCode: storeInfo.currencyCode,
                         locale: storeInfo.locale,

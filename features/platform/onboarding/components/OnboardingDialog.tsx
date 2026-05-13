@@ -171,14 +171,14 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="overflow-hidden p-0 sm:max-w-4xl gap-0 max-w-[95vw] max-h-[95vh]">
-        <DialogHeader className="border-b px-4 sm:px-6 py-4 mb-0">
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] max-w-[95vw] flex-col overflow-hidden p-0 gap-0 sm:max-w-4xl">
+        <DialogHeader className="border-b px-4 sm:px-6 py-4 mb-0 shrink-0">
           <DialogTitle>Restaurant Setup</DialogTitle>
         </DialogHeader>
 
-        <div className="flex flex-col lg:flex-row">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
           {/* Mobile-first layout: Store Setup header and Setup Type appear first */}
-          <div className="flex flex-col lg:w-80 lg:border-r order-1 lg:order-none lg:justify-between">
+          <div className="order-1 flex shrink-0 flex-col lg:order-none lg:w-80 lg:justify-between lg:border-r">
             <div className="flex-1">
               <div className="p-4 sm:p-6">
                 {/* Store Setup Header - Always visible first on mobile */}
@@ -489,7 +489,7 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({
             </div>
           </div>
 
-          <div className="flex-1 max-h-[60vh] lg:max-h-[70vh] overflow-y-auto p-4 sm:p-6 order-2 lg:order-none">
+          <div className="order-2 min-h-0 flex-1 overflow-y-auto p-4 sm:p-6 lg:order-none">
             {selectedTemplate === 'custom' && step === 'template' && !customJsonApplied ? (
               /* Custom Setup Steps */
               <CustomSetupSteps
@@ -518,7 +518,7 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({
         </div>
 
         {/* Mobile buttons - attached to bottom */}
-        <div className="flex lg:hidden flex-col border-t">
+        <div className="flex shrink-0 flex-col border-t lg:hidden">
           {/* Mobile Error message above buttons */}
           {error && !isLoading && step !== 'done' && (
             <Badge

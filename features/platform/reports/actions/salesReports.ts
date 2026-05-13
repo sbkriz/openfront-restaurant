@@ -13,7 +13,7 @@ export async function getSalesOverview(
       restaurantOrders(
         where: {
           createdAt: { gte: $startDate, lte: $endDate }
-          status: { notIn: [cancelled] }
+          status: { notIn: ["cancelled"] }
         }
         orderBy: { createdAt: desc }
       ) {
@@ -54,13 +54,13 @@ export async function getSalesOverview(
       restaurantOrdersCount(
         where: {
           createdAt: { gte: $startDate, lte: $endDate }
-          status: { notIn: [cancelled] }
+          status: { notIn: ["cancelled"] }
         }
       )
       previousOrders: restaurantOrders(
         where: {
           createdAt: { gte: $previousStartDate, lte: $previousEndDate }
-          status: { notIn: [cancelled] }
+          status: { notIn: ["cancelled"] }
         }
       ) {
         id
@@ -73,7 +73,7 @@ export async function getSalesOverview(
       previousOrdersCount: restaurantOrdersCount(
         where: {
           createdAt: { gte: $previousStartDate, lte: $previousEndDate }
-          status: { notIn: [cancelled] }
+          status: { notIn: ["cancelled"] }
         }
       )
     }
@@ -93,7 +93,7 @@ export async function getPaymentBreakdown(startDate: string, endDate: string) {
       payments(
         where: {
           createdAt: { gte: $startDate, lte: $endDate }
-          status: { equals: succeeded }
+          status: { equals: "succeeded" }
         }
       ) {
         id
@@ -110,7 +110,7 @@ export async function getPaymentBreakdown(startDate: string, endDate: string) {
       paymentsCount(
         where: {
           createdAt: { gte: $startDate, lte: $endDate }
-          status: { equals: succeeded }
+          status: { equals: "succeeded" }
         }
       )
     }
@@ -126,7 +126,7 @@ export async function getMenuItemPerformance(startDate: string, endDate: string)
         where: {
           order: {
             createdAt: { gte: $startDate, lte: $endDate }
-            status: { equals: completed }
+            status: { equals: "completed" }
           }
         }
       ) {
@@ -160,7 +160,7 @@ export async function getServerPerformance(startDate: string, endDate: string) {
         where: {
           restaurantOrders_some: {
             createdAt: { gte: $startDate, lte: $endDate }
-            status: { equals: completed }
+            status: { equals: "completed" }
           }
         }
       ) {
@@ -171,7 +171,7 @@ export async function getServerPerformance(startDate: string, endDate: string) {
       restaurantOrders(
         where: {
           createdAt: { gte: $startDate, lte: $endDate }
-          status: { equals: completed }
+          status: { equals: "completed" }
         }
       ) {
         id
@@ -202,7 +202,7 @@ export async function getCategoryPerformance(startDate: string, endDate: string)
             where: {
               order: {
                 createdAt: { gte: $startDate, lte: $endDate }
-                status: { equals: completed }
+                status: { equals: "completed" }
               }
             }
           ) {
@@ -222,21 +222,21 @@ export async function getOperationalMetrics() {
   const query = `
     query GetOperationalMetrics {
       openOrders: restaurantOrdersCount(
-        where: { status: { in: [open, in_progress] } }
+        where: { status: { in: ["open", "in_progress"] } }
       )
       inProgressOrders: restaurantOrdersCount(
-        where: { status: { equals: in_progress } }
+        where: { status: { equals: "in_progress" } }
       )
       readyOrders: restaurantOrdersCount(
-        where: { status: { equals: ready } }
+        where: { status: { equals: "ready" } }
       )
       occupiedTables: tablesCount(
-        where: { status: { equals: occupied } }
+        where: { status: { equals: "occupied" } }
       )
       totalTables: tablesCount
       cancelledOrders: restaurantOrdersCount(
         where: { 
-          status: { equals: cancelled }
+          status: { equals: "cancelled" }
           createdAt: { gte: "${new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()}" }
         }
       )
@@ -247,7 +247,7 @@ export async function getOperationalMetrics() {
       )
       recentOrders: restaurantOrders(
         where: { 
-          status: { equals: completed }
+          status: { equals: "completed" }
           createdAt: { gte: "${new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()}" }
         }
         orderBy: { createdAt: desc }
@@ -256,7 +256,38 @@ export async function getOperationalMetrics() {
         id
         createdAt
         status
+        guestCount
+        orderType
       }
+      recentTickets: kitchenTickets(
+        where: {
+          completedAt: { gte: "${new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()}" }
+          firedAt: { not: null }
+        }
+        take: 100
+      ) {
+        id
+        firedAt
+        startedAt
+        completedAt
+        status
+      }
+      activeFloorStaff: shiftsCount(
+        where: {
+          status: { equals: "started" }
+          role: { in: ["server", "bartender", "host", "busser"] }
+        }
+      )
+      openReservations: reservationsCount(
+        where: {
+          status: { in: ["confirmed", "seated"] }
+        }
+      )
+      waitingGuests: waitlistEntriesCount(
+        where: {
+          status: { equals: "waiting" }
+        }
+      )
     }
   `;
 

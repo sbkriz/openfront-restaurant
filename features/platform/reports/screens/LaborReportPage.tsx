@@ -25,27 +25,53 @@ import { cn } from '@/lib/utils'
 import { PlatformDatePicker } from '@/features/platform/components/PlatformDatePicker'
 import { formatCurrency } from "../lib/reportHelpers"
 
-interface TimeEntry {
+interface LaborShift {
   id: string
   staff: { id: string; name: string } | null
-  clockIn: string
+  startTime: string
+  endTime: string
+  clockIn: string | null
   clockOut: string | null
   role: string
+  status: string
   hourlyRate: string | null
   hoursWorked: number | null
   laborCost: number | null
-  tips: string | null
+}
+
+interface TipPoolDistribution {
+  staffId?: string
+  staffName?: string
+  role?: string
+  hoursWorked?: number
+  amount?: number
+}
+
+interface TipPool {
+  id: string
+  date: string
+  status: string
+  distributions: TipPoolDistribution[] | null
 }
 
 const GET_LABOR_DATA = gql`
   query GetLaborData($startDate: DateTime!, $endDate: DateTime!) {
-    timeEntries(
-      where: { clockIn: { gte: $startDate, lte: $endDate } }
-      orderBy: { clockIn: desc }
+    shifts(
+      where: { startTime: { gte: $startDate, lte: $endDate } }
+      orderBy: { startTime: desc }
     ) {
       id
       staff { id name }
-      clockIn clockOut role hourlyRate hoursWorked laborCost tips
+      startTime endTime clockIn clockOut role status hourlyRate hoursWorked laborCost
+    }
+    tipPools(
+      where: {
+        date: { gte: $startDate, lte: $endDate }
+        status: { in: ["calculated", "distributed"] }
+      }
+      orderBy: { date: desc }
+    ) {
+      id date status distributions
     }
     restaurantOrders(
       where: {
@@ -71,7 +97,8 @@ const ROLES = [
 ]
 
 export function LaborReportPage() {
-  const [entries, setEntries] = useState<TimeEntry[]>([])
+  const [entries, setEntries] = useState<LaborShift[]>([])
+  const [tipPools, setTipPools] = useState<TipPool[]>([])
   const [totalSales, setTotalSales] = useState(0)
   const [loading, setLoading] = useState(true)
   const [currencyConfig, setCurrencyConfig] = useState({ currencyCode: 'USD', locale: 'en-US' })
@@ -92,9 +119,10 @@ export function LaborReportPage() {
         startDate: startDate.toISOString(),
         endDate: endDate.toISOString(),
       })
-      setEntries((data as any).timeEntries || [])
+      setEntries((data as any).shifts || [])
+      setTipPools((data as any).tipPools || [])
       const orders = (data as any).restaurantOrders || []
-      setTotalSales(orders.reduce((sum: number, o: any) => sum + parseFloat(o.total || '0'), 0))
+      setTotalSales(orders.reduce((sum: number, o: any) => sum + Number(o.total || 0), 0))
       if ((data as any).storeSettings) {
         setCurrencyConfig({
           currencyCode: (data as any).storeSettings.currencyCode || 'USD',
@@ -114,10 +142,33 @@ export function LaborReportPage() {
     ? entries
     : entries.filter((e) => e.role === roleFilter)
 
+  const distributedTipsByStaff = new Map<string, number>()
+  tipPools.forEach((pool) => {
+    ;(pool.distributions || []).forEach((distribution) => {
+      if (!distribution.staffId) return
+      const amountCents = Math.round(Number(distribution.amount || 0))
+      distributedTipsByStaff.set(distribution.staffId, (distributedTipsByStaff.get(distribution.staffId) || 0) + amountCents)
+    })
+  })
+
+  const staffHours = new Map<string, number>()
+  entries.forEach((entry) => {
+    if (!entry.staff?.id) return
+    staffHours.set(entry.staff.id, (staffHours.get(entry.staff.id) || 0) + (entry.hoursWorked || 0))
+  })
+
+  const getTipCentsForEntry = (entry: LaborShift) => {
+    if (!entry.staff?.id) return 0
+    const staffTipCents = distributedTipsByStaff.get(entry.staff.id) || 0
+    const hours = staffHours.get(entry.staff.id) || 0
+    if (hours <= 0) return 0
+    return Math.round(staffTipCents * ((entry.hoursWorked || 0) / hours))
+  }
+
   const totalHours = filteredEntries.reduce((s, e) => s + (e.hoursWorked || 0), 0)
-  const totalLaborCost = filteredEntries.reduce((s, e) => s + (e.laborCost || 0), 0)
-  const totalTips = filteredEntries.reduce((s, e) => s + parseFloat(e.tips || '0'), 0)
-  const laborPercentage = totalSales > 0 ? (totalLaborCost / totalSales) * 100 : 0
+  const totalLaborCostCents = filteredEntries.reduce((s, e) => s + Math.round((e.laborCost || 0) * 100), 0)
+  const totalTips = Array.from(distributedTipsByStaff.values()).reduce((s, amount) => s + amount, 0)
+  const laborPercentage = totalSales > 0 ? (totalLaborCostCents / totalSales) * 100 : 0
   const salesPerLaborHour = totalHours > 0 ? totalSales / totalHours : 0
 
   const roleBreakdown = ROLES.filter((r) => r.value !== 'all').map((role) => {
@@ -125,8 +176,8 @@ export function LaborReportPage() {
     return {
       role: role.label,
       hours: roleEntries.reduce((s, e) => s + (e.hoursWorked || 0), 0),
-      cost: roleEntries.reduce((s, e) => s + (e.laborCost || 0), 0),
-      staff: new Set(roleEntries.map((e) => e.staff?.id)).size,
+      cost: roleEntries.reduce((s, e) => s + Math.round((e.laborCost || 0) * 100), 0),
+      staff: new Set(roleEntries.map((e) => e.staff?.id).filter(Boolean)).size,
     }
   }).filter((r) => r.hours > 0).sort((a, b) => b.cost - a.cost)
 
@@ -189,7 +240,7 @@ export function LaborReportPage() {
         <div className="px-5 py-3">
           <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Payroll Cost</p>
           <p className="text-xl font-semibold mt-1">
-            {loading ? '—' : formatCurrency(totalLaborCost, currencyConfig)}
+            {loading ? '—' : formatCurrency(totalLaborCostCents, currencyConfig)}
           </p>
         </div>
         <div className="px-5 py-3">
@@ -231,7 +282,7 @@ export function LaborReportPage() {
             <div className="px-5 py-3 border-b border-border bg-muted/20 flex items-center gap-2">
               <Clock size={13} className="text-muted-foreground" />
               <p className="text-[11px] uppercase tracking-wider font-semibold text-foreground">
-                Time Entry Audit
+                Shift Labor Audit
               </p>
               <span className="ml-auto text-[11px] text-muted-foreground">
                 {filteredEntries.length} record{filteredEntries.length !== 1 ? 's' : ''}
@@ -243,7 +294,8 @@ export function LaborReportPage() {
                   <TableRow className="hover:bg-transparent">
                     <TableHead className="text-[10px] uppercase tracking-wider h-10 text-muted-foreground font-semibold">Staff</TableHead>
                     <TableHead className="text-[10px] uppercase tracking-wider h-10 text-muted-foreground font-semibold">Role</TableHead>
-                    <TableHead className="text-[10px] uppercase tracking-wider h-10 text-muted-foreground font-semibold">Date</TableHead>
+                    <TableHead className="text-[10px] uppercase tracking-wider h-10 text-muted-foreground font-semibold">Scheduled</TableHead>
+                    <TableHead className="text-[10px] uppercase tracking-wider h-10 text-muted-foreground font-semibold">Status</TableHead>
                     <TableHead className="text-[10px] uppercase tracking-wider h-10 text-muted-foreground font-semibold text-right">Hours</TableHead>
                     <TableHead className="text-[10px] uppercase tracking-wider h-10 text-muted-foreground font-semibold text-right">Labor Cost</TableHead>
                     <TableHead className="text-[10px] uppercase tracking-wider h-10 text-muted-foreground font-semibold text-right">Tips</TableHead>
@@ -252,15 +304,15 @@ export function LaborReportPage() {
                 <TableBody>
                   {filteredEntries.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center py-16 text-muted-foreground text-sm">
-                        No time entries for this period.
+                      <TableCell colSpan={7} className="text-center py-16 text-muted-foreground text-sm">
+                        No shifts for this period.
                       </TableCell>
                     </TableRow>
                   ) : (
                     filteredEntries.map((entry) => (
                       <TableRow key={entry.id} className="hover:bg-muted/20 transition-colors">
                         <TableCell className="font-medium text-sm py-3">
-                          {entry.staff?.name || 'Unknown'}
+                          {entry.staff?.name || 'Unassigned'}
                         </TableCell>
                         <TableCell>
                           <Badge variant="outline" className="text-[10px] uppercase tracking-wider font-medium">
@@ -268,18 +320,29 @@ export function LaborReportPage() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
-                          {new Date(entry.clockIn).toLocaleDateString(undefined, {
+                          {new Date(entry.startTime).toLocaleDateString(undefined, {
                             month: 'short', day: 'numeric', year: 'numeric',
                           })}
+                        </TableCell>
+                        <TableCell>
+                          <Badge className={cn(
+                            "text-[9px] uppercase tracking-wider font-semibold border-none",
+                            entry.status === 'completed' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' :
+                            entry.status === 'started' ? 'bg-blue-500/15 text-blue-700 dark:text-blue-300' :
+                            entry.status === 'no_show' || entry.status === 'called_out' ? 'bg-rose-500/15 text-rose-700 dark:text-rose-300' :
+                            'bg-muted text-muted-foreground'
+                          )}>
+                            {entry.status.replace('_', ' ')}
+                          </Badge>
                         </TableCell>
                         <TableCell className="text-right font-mono text-sm tabular-nums">
                           {entry.hoursWorked?.toFixed(1) || '0.0'}
                         </TableCell>
                         <TableCell className="text-right font-semibold text-sm tabular-nums">
-                          {formatCurrency(entry.laborCost || 0, currencyConfig)}
+                          {formatCurrency(Math.round((entry.laborCost || 0) * 100), currencyConfig)}
                         </TableCell>
                         <TableCell className="text-right text-sm tabular-nums text-emerald-600 dark:text-emerald-400 font-medium">
-                          {formatCurrency(parseFloat(entry.tips || '0'), currencyConfig)}
+                          {formatCurrency(getTipCentsForEntry(entry), currencyConfig)}
                         </TableCell>
                       </TableRow>
                     ))
@@ -304,7 +367,7 @@ export function LaborReportPage() {
                 </div>
               ) : (
                 roleBreakdown.map((r) => {
-                  const pct = totalLaborCost > 0 ? (r.cost / totalLaborCost) * 100 : 0
+                  const pct = totalLaborCostCents > 0 ? (r.cost / totalLaborCostCents) * 100 : 0
                   return (
                     <div key={r.role} className="px-5 py-3.5">
                       <div className="flex items-center justify-between mb-1">

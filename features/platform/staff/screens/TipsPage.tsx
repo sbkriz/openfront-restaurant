@@ -53,7 +53,7 @@ interface Distribution {
   amount: number
 }
 
-interface TimeEntry {
+interface CompletedShift {
   id: string
   staff: { id: string; name: string } | null
   role: string
@@ -79,9 +79,14 @@ const GET_TIP_POOLS = gql`
   }
 `
 
-const GET_TIME_ENTRIES_FOR_DATE = gql`
-  query GetTimeEntriesForDate($startDate: DateTime!, $endDate: DateTime!) {
-    timeEntries(where: { clockIn: { gte: $startDate, lte: $endDate } }) {
+const GET_COMPLETED_SHIFTS_FOR_DATE = gql`
+  query GetCompletedShiftsForDate($startDate: DateTime!, $endDate: DateTime!) {
+    shifts(
+      where: {
+        status: { equals: "completed" }
+        clockIn: { gte: $startDate, lte: $endDate }
+      }
+    ) {
       id
       staff { id name }
       role
@@ -91,14 +96,14 @@ const GET_TIME_ENTRIES_FOR_DATE = gql`
 `
 
 const CREATE_TIP_POOL = gql`
-  mutation CreateTipPool($data: TipPoolCreateInput!) {
-    createTipPool(data: $data) { id }
+  mutation CreateTipPoolLedger($date: String!, $tipPoolType: String!, $cashTips: String!, $creditTips: String!) {
+    createTipPoolLedger(date: $date, tipPoolType: $tipPoolType, cashTips: $cashTips, creditTips: $creditTips) { success error }
   }
 `
 
 const UPDATE_TIP_POOL = gql`
-  mutation UpdateTipPool($id: ID!, $data: TipPoolUpdateInput!) {
-    updateTipPool(where: { id: $id }, data: $data) { id }
+  mutation UpdateTipPoolStatus($tipPoolId: ID!, $action: String!) {
+    updateTipPoolStatus(tipPoolId: $tipPoolId, action: $action) { success error }
   }
 `
 
@@ -121,6 +126,7 @@ export function TipsPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [calculatedDistributions, setCalculatedDistributions] = useState<Distribution[]>([])
   const [currencyConfig, setCurrencyConfig] = useState({ currencyCode: 'USD', locale: 'en-US' })
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const [form, setForm] = useState({
     date: new Date().toISOString().slice(0, 10),
@@ -163,16 +169,16 @@ export function TipsPage() {
       const endDate = new Date(form.date)
       endDate.setHours(23, 59, 59, 999)
 
-      const data = await request('/api/graphql', GET_TIME_ENTRIES_FOR_DATE, {
+      const data = await request('/api/graphql', GET_COMPLETED_SHIFTS_FOR_DATE, {
         startDate: startDate.toISOString(),
         endDate: endDate.toISOString(),
       })
 
-      const entries = (data as any).timeEntries || []
+      const entries = (data as any).shifts || []
       const distributions: Distribution[] = []
 
       if (form.tipPoolType === 'house_pool') {
-        const totalHours = entries.reduce((s: number, e: TimeEntry) => s + (e.hoursWorked || 0), 0)
+        const totalHours = entries.reduce((s: number, e: CompletedShift) => s + (e.hoursWorked || 0), 0)
         for (const entry of entries) {
           if (!entry.staff || !entry.hoursWorked) continue
           const share = totalHours > 0 ? (entry.hoursWorked / totalHours) * totalTips : 0
@@ -185,7 +191,7 @@ export function TipsPage() {
           })
         }
       } else if (form.tipPoolType === 'pool_by_role') {
-        const roleGroups: Record<string, TimeEntry[]> = {}
+        const roleGroups: Record<string, CompletedShift[]> = {}
         for (const entry of entries) {
           if (!roleGroups[entry.role]) roleGroups[entry.role] = []
           roleGroups[entry.role].push(entry)
@@ -224,33 +230,37 @@ export function TipsPage() {
 
   const handleCreate = async () => {
     try {
-      const totalTips = parseFloat(form.cashTips || '0') + parseFloat(form.creditTips || '0')
-      await request('/api/graphql', CREATE_TIP_POOL, {
-        data: {
-          date: new Date(form.date).toISOString(),
-          tipPoolType: form.tipPoolType,
-          totalTips: totalTips.toFixed(2),
-          cashTips: parseFloat(form.cashTips || '0').toFixed(2),
-          creditTips: parseFloat(form.creditTips || '0').toFixed(2),
-          distributions: calculatedDistributions,
-          status: 'calculated',
-        },
+      const res: any = await request('/api/graphql', CREATE_TIP_POOL, {
+        date: new Date(form.date).toISOString(),
+        tipPoolType: form.tipPoolType,
+        cashTips: form.cashTips || '0',
+        creditTips: form.creditTips || '0',
       })
+      if (!res?.createTipPoolLedger?.success) {
+        throw new Error(res?.createTipPoolLedger?.error || 'Unable to create tip pool')
+      }
+      setActionError(null)
       setDialogOpen(false)
       fetchTipPools()
-    } catch (err) {
+    } catch (err: any) {
+      setActionError(err?.message || 'Unable to create tip pool')
       console.error('Error creating tip pool:', err)
     }
   }
 
   const markDistributed = async (id: string) => {
     try {
-      await request('/api/graphql', UPDATE_TIP_POOL, {
-        id,
-        data: { status: 'distributed' },
+      const res: any = await request('/api/graphql', UPDATE_TIP_POOL, {
+        tipPoolId: id,
+        action: 'distribute',
       })
+      if (!res?.updateTipPoolStatus?.success) {
+        throw new Error(res?.updateTipPoolStatus?.error || 'Unable to distribute tip pool')
+      }
+      setActionError(null)
       fetchTipPools()
-    } catch (err) {
+    } catch (err: any) {
+      setActionError(err?.message || 'Unable to distribute tip pool')
       console.error('Error updating:', err)
     }
   }
@@ -263,7 +273,7 @@ export function TipsPage() {
     )
   }
 
-  const totalDistributed = tipPools.filter(t => t.status === 'distributed').reduce((s, t) => s + parseFloat(t.totalTips || '0'), 0)
+  const totalDistributed = tipPools.filter(t => t.status === 'distributed').reduce((s, t) => s + Number(t.totalTips || 0), 0)
   const pendingCount = tipPools.filter(t => t.status === 'calculated').length
 
   const breadcrumbs = [
@@ -276,6 +286,12 @@ export function TipsPage() {
   return (
     <div className="flex flex-col h-full bg-background">
       <PageBreadcrumbs items={breadcrumbs} />
+
+      {actionError ? (
+        <div className="mx-6 mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">
+          {actionError}
+        </div>
+      ) : null}
 
       {/* Header */}
       <div className="px-6 py-6 border-b bg-gradient-to-br from-emerald-500/5 via-background to-emerald-500/5">
@@ -302,7 +318,7 @@ export function TipsPage() {
               </div>
               <div>
                 <div className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">30-Day Distribution</div>
-                <div className="text-3xl font-black mt-1">{formatCurrency(totalDistributed, currencyConfig, { inputIsCents: false })}</div>
+                <div className="text-3xl font-black mt-1">{formatCurrency(totalDistributed, currencyConfig)}</div>
               </div>
             </CardContent>
           </Card>
@@ -374,15 +390,15 @@ export function TipsPage() {
                           </div>
                           <div>
                              <div className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1">Cash Intake</div>
-                             <div className="font-bold text-sm text-amber-600 dark:text-amber-400">{formatCurrency(parseFloat(pool.cashTips || '0'), currencyConfig, { inputIsCents: false })}</div>
+                             <div className="font-bold text-sm text-amber-600 dark:text-amber-400">{formatCurrency(Number(pool.cashTips || 0), currencyConfig)}</div>
                           </div>
                           <div>
                              <div className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1">Digital Intake</div>
-                             <div className="font-bold text-sm text-blue-600 dark:text-blue-400">{formatCurrency(parseFloat(pool.creditTips || '0'), currencyConfig, { inputIsCents: false })}</div>
+                             <div className="font-bold text-sm text-blue-600 dark:text-blue-400">{formatCurrency(Number(pool.creditTips || 0), currencyConfig)}</div>
                           </div>
                           <div>
                              <div className="text-[9px] font-black uppercase tracking-widest text-muted-foreground mb-1">Total Pool</div>
-                             <div className="font-black text-lg">{formatCurrency(parseFloat(pool.totalTips), currencyConfig, { inputIsCents: false })}</div>
+                             <div className="font-black text-lg">{formatCurrency(Number(pool.totalTips || 0), currencyConfig)}</div>
                           </div>
                        </div>
 
@@ -501,7 +517,7 @@ export function TipsPage() {
                             <TableCell className="font-bold text-xs py-3">{d.staffName}</TableCell>
                             <TableCell><Badge variant="outline" className="text-[9px] font-bold uppercase rounded-md h-5">{d.role}</Badge></TableCell>
                             <TableCell className="text-right text-xs font-mono">{d.hoursWorked?.toFixed(1) || '-'}</TableCell>
-                            <TableCell className="text-right font-black text-emerald-600 dark:text-emerald-400">{formatCurrency(d.amount, currencyConfig, { inputIsCents: false })}</TableCell>
+                            <TableCell className="text-right font-black text-emerald-600 dark:text-emerald-400">{formatCurrency(d.amount, currencyConfig)}</TableCell>
                           </TableRow>
                         ))}
                       </TableBody>

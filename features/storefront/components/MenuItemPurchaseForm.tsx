@@ -189,6 +189,7 @@ export function MenuItemPurchaseForm({
               <div className="space-y-2">
                 {group.modifiers.map((modifier) => {
                   const isSelected = isModifierSelected(group.id, modifier.id)
+                  const allowsMultiple = group.max > 1
 
                   return (
                     <button
@@ -206,11 +207,19 @@ export function MenuItemPurchaseForm({
                         <div className="flex items-center gap-3">
                           <span
                             className={cn(
-                              "flex size-4 items-center justify-center rounded-full border",
+                              "flex size-4 items-center justify-center border",
+                              allowsMultiple ? "rounded-sm" : "rounded-full",
                               isSelected ? "border-primary" : "border-border"
                             )}
                           >
-                            {isSelected ? <span className="size-2 rounded-full bg-primary" /> : null}
+                            {isSelected ? (
+                              <span
+                                className={cn(
+                                  "size-2 bg-primary",
+                                  allowsMultiple ? "rounded-[2px]" : "rounded-full"
+                                )}
+                              />
+                            ) : null}
                           </span>
                           <span className="text-sm font-medium text-foreground">{modifier.name}</span>
                         </div>

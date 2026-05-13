@@ -6683,6 +6683,891 @@ async function createPOSOrder(root, args, context) {
   });
 }
 
+// features/keystone/mutations/addServiceFloorItem.ts
+function generateDineInOrderNumber() {
+  return `DIN-${Date.now().toString(36).toUpperCase()}`;
+}
+function getCourseType2(courseNumber) {
+  if (courseNumber === 1) return "appetizers";
+  if (courseNumber === 2) return "mains";
+  if (courseNumber === 3) return "desserts";
+  return "mains";
+}
+async function recalculateOrderTotals2(orderId, context) {
+  const sudo = context.sudo();
+  const [settings, order] = await Promise.all([
+    getStoreDeliverySettings(context),
+    sudo.query.RestaurantOrder.findOne({
+      where: { id: orderId },
+      query: `
+        id
+        orderType
+        currencyCode
+        tip
+        discount
+        orderItems { id quantity price }
+      `
+    })
+  ]);
+  if (!order) throw new Error("Order not found while recalculating totals");
+  const subtotal = (order.orderItems || []).reduce(
+    (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0),
+    0
+  );
+  const { tax } = calculateRestaurantTotals({
+    subtotal,
+    orderType: order.orderType || "dine_in",
+    taxRate: settings?.taxRate,
+    currencyCode: settings?.currencyCode || order.currencyCode || "USD"
+  });
+  const tip = Math.max(0, Number(order.tip || 0));
+  const discount = Math.max(0, Number(order.discount || 0));
+  const total = Math.max(0, subtotal + tax + tip - discount);
+  await sudo.db.RestaurantOrder.updateOne({
+    where: { id: orderId },
+    data: {
+      subtotal,
+      tax,
+      total,
+      currencyCode: settings?.currencyCode || order.currencyCode || "USD"
+    }
+  });
+  return { subtotal, tax, total };
+}
+async function addServiceFloorItem(root, args, context) {
+  if (!permissions.canManageOrders({ session: context.session })) {
+    throw new Error("Not authorized to manage service-floor checks");
+  }
+  const quantity = Math.max(1, Math.floor(Number(args.quantity || 1)));
+  const courseNumber = Math.max(1, Math.floor(Number(args.courseNumber || 1)));
+  const sudo = context.sudo();
+  if (!args.tableId) throw new Error("Table is required");
+  if (!args.menuItemId) throw new Error("Menu item is required");
+  const [settings, table, menuItem] = await Promise.all([
+    getStoreDeliverySettings(context),
+    sudo.query.Table.findOne({
+      where: { id: args.tableId },
+      query: "id tableNumber status"
+    }),
+    sudo.query.MenuItem.findOne({
+      where: { id: args.menuItemId },
+      query: "id name price available"
+    })
+  ]);
+  if (!table) throw new Error("Table not found");
+  if (!menuItem) throw new Error("Menu item not found");
+  if (!menuItem.available) throw new Error(`${menuItem.name || "Selected item"} is unavailable`);
+  let orderId = args.orderId || null;
+  let order = null;
+  if (orderId) {
+    order = await sudo.query.RestaurantOrder.findOne({
+      where: { id: orderId },
+      query: "id status orderType tables { id } courses { id courseNumber }"
+    });
+    if (!order) throw new Error("Active check not found");
+  } else {
+    const currencyCode = settings?.currencyCode || "USD";
+    order = await sudo.db.RestaurantOrder.createOne({
+      data: {
+        orderNumber: generateDineInOrderNumber(),
+        orderType: "dine_in",
+        orderSource: "pos",
+        status: "open",
+        guestCount: 1,
+        subtotal: 0,
+        tax: 0,
+        total: 0,
+        currencyCode,
+        tables: { connect: [{ id: args.tableId }] },
+        server: context.session?.itemId ? { connect: { id: context.session.itemId } } : void 0,
+        createdBy: context.session?.itemId ? { connect: { id: context.session.itemId } } : void 0
+      }
+    });
+    orderId = order.id;
+    await sudo.db.Table.updateOne({
+      where: { id: args.tableId },
+      data: { status: "occupied" }
+    });
+  }
+  const existingCourse = (order.courses || []).find((course2) => Number(course2.courseNumber) === courseNumber);
+  const course = existingCourse || await sudo.db.OrderCourse.createOne({
+    data: {
+      order: { connect: { id: orderId } },
+      courseNumber,
+      courseType: getCourseType2(courseNumber),
+      status: "pending"
+    }
+  });
+  if (!orderId) throw new Error("Unable to create or find active order for this table");
+  await sudo.db.OrderItem.createOne({
+    data: {
+      order: { connect: { id: orderId } },
+      course: { connect: { id: course.id } },
+      menuItem: { connect: { id: args.menuItemId } },
+      quantity,
+      price: Number(menuItem.price || 0),
+      courseNumber,
+      seatNumber: args.seatNumber ?? void 0,
+      specialInstructions: args.specialInstructions || ""
+    }
+  });
+  await recalculateOrderTotals2(orderId, context);
+  const refreshed = await sudo.query.RestaurantOrder.findOne({
+    where: { id: orderId },
+    query: "id orderNumber status subtotal tax total"
+  });
+  return refreshed;
+}
+
+// features/keystone/mutations/updateServiceFloorItem.ts
+function getCourseType3(courseNumber) {
+  if (courseNumber === 1) return "appetizers";
+  if (courseNumber === 2) return "mains";
+  if (courseNumber === 3) return "desserts";
+  return "mains";
+}
+async function recalculateOrderTotals3(orderId, context, voidReason) {
+  const sudo = context.sudo();
+  const [settings, order] = await Promise.all([
+    getStoreDeliverySettings(context),
+    sudo.query.RestaurantOrder.findOne({
+      where: { id: orderId },
+      query: `
+        id
+        orderType
+        currencyCode
+        tip
+        discount
+        specialInstructions
+        orderItems { id quantity price }
+      `
+    })
+  ]);
+  if (!order) throw new Error("Order not found while recalculating totals");
+  const subtotal = (order.orderItems || []).reduce(
+    (sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0),
+    0
+  );
+  const { tax } = calculateRestaurantTotals({
+    subtotal,
+    orderType: order.orderType || "dine_in",
+    taxRate: settings?.taxRate,
+    currencyCode: settings?.currencyCode || order.currencyCode || "USD"
+  });
+  const tip = Math.max(0, Number(order.tip || 0));
+  const discount = Math.max(0, Number(order.discount || 0));
+  const total = Math.max(0, subtotal + tax + tip - discount);
+  const notePatch = voidReason ? order.specialInstructions ? `${order.specialInstructions} | VOID ITEM: ${voidReason}` : `VOID ITEM: ${voidReason}` : order.specialInstructions;
+  await sudo.db.RestaurantOrder.updateOne({
+    where: { id: orderId },
+    data: {
+      subtotal,
+      tax,
+      total,
+      currencyCode: settings?.currencyCode || order.currencyCode || "USD",
+      specialInstructions: notePatch || ""
+    }
+  });
+  return { subtotal, tax, total };
+}
+async function getOrCreateCourse(orderId, courseNumber, context) {
+  const sudo = context.sudo();
+  const courses = await sudo.query.OrderCourse.findMany({
+    where: {
+      order: { id: { equals: orderId } },
+      courseNumber: { equals: courseNumber }
+    },
+    query: "id courseNumber",
+    take: 1
+  });
+  if (courses[0]) return courses[0];
+  return sudo.db.OrderCourse.createOne({
+    data: {
+      order: { connect: { id: orderId } },
+      courseNumber,
+      courseType: getCourseType3(courseNumber),
+      status: "pending"
+    }
+  });
+}
+async function updateServiceFloorItem(root, args, context) {
+  if (!permissions.canManageOrders({ session: context.session })) {
+    throw new Error("Not authorized to manage service-floor checks");
+  }
+  if (!args.orderItemId) throw new Error("Order item is required");
+  const sudo = context.sudo();
+  const item = await sudo.query.OrderItem.findOne({
+    where: { id: args.orderItemId },
+    query: "id quantity courseNumber order { id status }"
+  });
+  if (!item?.order?.id) throw new Error("Order item not found");
+  const orderId = item.order.id;
+  const voidReason = args.voidReason?.trim() || null;
+  if (voidReason) {
+    await sudo.db.OrderItem.deleteOne({ where: { id: args.orderItemId } });
+  } else {
+    const quantity = Math.max(1, Math.floor(Number(args.quantity ?? item.quantity ?? 1)));
+    const courseNumber = Math.max(1, Math.floor(Number(args.courseNumber ?? item.courseNumber ?? 1)));
+    const course = await getOrCreateCourse(orderId, courseNumber, context);
+    await sudo.db.OrderItem.updateOne({
+      where: { id: args.orderItemId },
+      data: {
+        quantity,
+        courseNumber,
+        course: { connect: { id: course.id } },
+        seatNumber: args.seatNumber ?? void 0,
+        specialInstructions: args.specialInstructions ?? void 0
+      }
+    });
+  }
+  await recalculateOrderTotals3(orderId, context, voidReason);
+  const refreshed = await sudo.query.RestaurantOrder.findOne({
+    where: { id: orderId },
+    query: "id orderNumber status subtotal tax total"
+  });
+  return refreshed;
+}
+
+// features/keystone/mutations/serviceFloorTable.ts
+var ACTIVE_ORDER_STATUSES2 = ["open", "sent_to_kitchen", "in_progress", "ready", "served"];
+async function getActiveOrdersForTable(tableId, context) {
+  return context.sudo().query.RestaurantOrder.findMany({
+    where: {
+      tables: { some: { id: { equals: tableId } } },
+      status: { in: ACTIVE_ORDER_STATUSES2 }
+    },
+    query: "id status orderNumber",
+    take: 5
+  });
+}
+async function updateServiceFloorTableStatus(root, args, context) {
+  if (!permissions.canManageTables({ session: context.session })) {
+    return { success: false, error: "Not authorized to manage tables" };
+  }
+  if (!args.tableId) return { success: false, error: "Table is required" };
+  if (!["available", "occupied", "reserved", "cleaning"].includes(args.status)) {
+    return { success: false, error: "Invalid table status" };
+  }
+  try {
+    const sudo = context.sudo();
+    const table = await sudo.query.Table.findOne({
+      where: { id: args.tableId },
+      query: "id tableNumber status"
+    });
+    if (!table) return { success: false, error: "Table not found" };
+    const activeOrders = await getActiveOrdersForTable(args.tableId, context);
+    if (activeOrders.length > 0 && ["available", "cleaning"].includes(args.status)) {
+      return {
+        success: false,
+        error: `Table ${table.tableNumber || ""} has an active check. Close or move the check before marking it ${args.status}.`
+      };
+    }
+    await sudo.db.Table.updateOne({
+      where: { id: args.tableId },
+      data: { status: args.status }
+    });
+    return { success: true, error: null };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+async function updateServiceFloorCheckStatus(root, args, context) {
+  if (!permissions.canManageOrders({ session: context.session })) {
+    return { success: false, error: "Not authorized to manage checks" };
+  }
+  if (!args.orderId) return { success: false, error: "Order is required" };
+  try {
+    const sudo = context.sudo();
+    const order = await sudo.query.RestaurantOrder.findOne({
+      where: { id: args.orderId },
+      query: "id status total payments { id amount status } tables { id } orderItems { id }"
+    });
+    if (!order) return { success: false, error: "Check not found" };
+    let nextStatus = null;
+    if (args.action === "send_to_kitchen") {
+      if (!order.orderItems?.length) return { success: false, error: "Add at least one item before sending to kitchen" };
+      nextStatus = "sent_to_kitchen";
+    } else if (args.action === "mark_served") {
+      nextStatus = "served";
+    } else if (args.action === "close_check") {
+      const paid = (order.payments || []).filter((payment) => payment.status === "succeeded").reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+      if (paid < Number(order.total || 0)) {
+        return { success: false, error: "Check cannot be closed until payment is complete" };
+      }
+      nextStatus = "completed";
+    } else if (args.action === "cancel_check") {
+      nextStatus = "cancelled";
+    } else {
+      return { success: false, error: "Invalid check action" };
+    }
+    await sudo.db.RestaurantOrder.updateOne({
+      where: { id: args.orderId },
+      data: { status: nextStatus }
+    });
+    if (["completed", "cancelled"].includes(nextStatus)) {
+      for (const table of order.tables || []) {
+        const activeOrders = await getActiveOrdersForTable(table.id, context);
+        const otherActiveOrders = activeOrders.filter((activeOrder) => activeOrder.id !== order.id);
+        if (otherActiveOrders.length === 0) {
+          await sudo.db.Table.updateOne({
+            where: { id: table.id },
+            data: { status: nextStatus === "completed" ? "cleaning" : "available" }
+          });
+        }
+      }
+    }
+    return { success: true, error: null };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+
+// features/keystone/mutations/waitlistManagement.ts
+function normalizePartySize(value) {
+  return Math.max(1, Math.floor(Number(value || 1)));
+}
+function normalizeQuotedWait(value) {
+  return Math.max(0, Math.floor(Number(value || 15)));
+}
+async function createWaitlistEntry(root, args, context) {
+  if (!permissions.canManageKitchen({ session: context.session })) {
+    return { success: false, error: "Not authorized to manage waitlist" };
+  }
+  const customerName = args.customerName?.trim();
+  const phoneNumber = args.phoneNumber?.trim();
+  if (!customerName) return { success: false, error: "Guest name is required" };
+  if (!phoneNumber) return { success: false, error: "Phone number is required" };
+  try {
+    await context.sudo().db.WaitlistEntry.createOne({
+      data: {
+        customerName,
+        phoneNumber,
+        partySize: normalizePartySize(args.partySize),
+        quotedWaitTime: normalizeQuotedWait(args.quotedWaitTime),
+        notes: args.notes?.trim() || "",
+        status: "waiting",
+        addedBy: context.session?.itemId ? { connect: { id: context.session.itemId } } : void 0
+      }
+    });
+    return { success: true, error: null };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+async function updateWaitlistStatus(root, args, context) {
+  if (!permissions.canManageKitchen({ session: context.session })) {
+    return { success: false, error: "Not authorized to manage waitlist" };
+  }
+  if (!args.entryId) return { success: false, error: "Waitlist entry is required" };
+  try {
+    const sudo = context.sudo();
+    const entry = await sudo.query.WaitlistEntry.findOne({
+      where: { id: args.entryId },
+      query: "id status partySize customerName"
+    });
+    if (!entry) return { success: false, error: "Waitlist entry not found" };
+    if (["seated", "cancelled", "no_show"].includes(entry.status || "")) {
+      return { success: false, error: "This waitlist entry is already closed" };
+    }
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    if (args.action === "notify") {
+      await sudo.db.WaitlistEntry.updateOne({
+        where: { id: args.entryId },
+        data: { status: "notified", notifiedAt: now }
+      });
+    } else if (args.action === "seat") {
+      if (!args.tableId) return { success: false, error: "Select a table before seating the guest" };
+      const table = await sudo.query.Table.findOne({
+        where: { id: args.tableId },
+        query: "id tableNumber capacity status"
+      });
+      if (!table) return { success: false, error: "Table not found" };
+      if (table.status !== "available") {
+        return { success: false, error: `Table ${table.tableNumber || ""} is not available` };
+      }
+      if (Number(table.capacity || 0) < Number(entry.partySize || 1)) {
+        return { success: false, error: "Selected table is too small for this party" };
+      }
+      await sudo.db.WaitlistEntry.updateOne({
+        where: { id: args.entryId },
+        data: {
+          status: "seated",
+          seatedAt: now,
+          table: { connect: { id: args.tableId } }
+        }
+      });
+      await sudo.db.Table.updateOne({
+        where: { id: args.tableId },
+        data: { status: "occupied" }
+      });
+    } else if (args.action === "cancel") {
+      await sudo.db.WaitlistEntry.updateOne({
+        where: { id: args.entryId },
+        data: { status: "cancelled" }
+      });
+    } else if (args.action === "no_show") {
+      await sudo.db.WaitlistEntry.updateOne({
+        where: { id: args.entryId },
+        data: { status: "no_show" }
+      });
+    } else {
+      return { success: false, error: "Invalid waitlist action" };
+    }
+    return { success: true, error: null };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+
+// features/keystone/mutations/reservationManagement.ts
+var ACTIVE_RESERVATION_STATUSES = ["pending", "confirmed", "seated"];
+var TERMINAL_RESERVATION_STATUSES = ["completed", "cancelled", "no_show"];
+function minutes(value, fallback = 90) {
+  return Math.max(15, Math.floor(Number(value || fallback)));
+}
+function partySize(value) {
+  return Math.max(1, Math.floor(Number(value || 1)));
+}
+function reservationWindow(dateValue, duration) {
+  const start = new Date(dateValue);
+  if (Number.isNaN(start.getTime())) throw new Error("Reservation date is invalid");
+  const end = new Date(start.getTime() + duration * 6e4);
+  return { start, end };
+}
+async function assertTableAssignable({
+  tableId,
+  party,
+  reservationStart,
+  duration,
+  reservationId,
+  context
+}) {
+  if (!tableId) return;
+  const sudo = context.sudo();
+  const table = await sudo.query.Table.findOne({
+    where: { id: tableId },
+    query: "id tableNumber capacity status"
+  });
+  if (!table) throw new Error("Assigned table not found");
+  if (Number(table.capacity || 0) < party) {
+    throw new Error(`Table ${table.tableNumber || ""} is too small for this party`);
+  }
+  const { start, end } = reservationWindow(reservationStart, duration);
+  const dayStart = new Date(start);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(start);
+  dayEnd.setHours(23, 59, 59, 999);
+  const sameDayReservations = await sudo.query.Reservation.findMany({
+    where: {
+      assignedTable: { id: { equals: tableId } },
+      reservationDate: { gte: dayStart.toISOString(), lte: dayEnd.toISOString() },
+      status: { in: ACTIVE_RESERVATION_STATUSES }
+    },
+    query: "id reservationDate duration status customerName"
+  });
+  const conflicts = sameDayReservations.filter((reservation) => {
+    if (reservationId && reservation.id === reservationId) return false;
+    const existingStart = new Date(reservation.reservationDate);
+    const existingEnd = new Date(existingStart.getTime() + minutes(reservation.duration) * 6e4);
+    return existingStart < end && start < existingEnd;
+  });
+  if (conflicts.length > 0) {
+    throw new Error(`Table ${table.tableNumber || ""} already has a reservation in that time window`);
+  }
+}
+async function upsertReservation(root, args, context) {
+  if (!permissions.canManageTables({ session: context.session })) {
+    return { success: false, error: "Not authorized to manage reservations" };
+  }
+  const customerName = args.customerName?.trim();
+  const customerPhone = args.customerPhone?.trim();
+  if (!customerName) return { success: false, error: "Customer name is required" };
+  if (!customerPhone) return { success: false, error: "Phone number is required" };
+  try {
+    const normalizedPartySize = partySize(args.partySize);
+    const normalizedDuration = minutes(args.duration);
+    const status = args.status || "confirmed";
+    if (!["pending", "confirmed", "seated", "completed", "cancelled", "no_show"].includes(status)) {
+      return { success: false, error: "Invalid reservation status" };
+    }
+    await assertTableAssignable({
+      tableId: args.assignedTableId,
+      party: normalizedPartySize,
+      reservationStart: args.reservationDate,
+      duration: normalizedDuration,
+      reservationId: args.reservationId,
+      context
+    });
+    const data = {
+      customerName,
+      customerPhone,
+      customerEmail: args.customerEmail?.trim() || "",
+      reservationDate: new Date(args.reservationDate).toISOString(),
+      partySize: normalizedPartySize,
+      duration: normalizedDuration,
+      status,
+      specialRequests: args.specialRequests?.trim() || ""
+    };
+    if (args.assignedTableId) {
+      data.assignedTable = { connect: { id: args.assignedTableId } };
+    } else if (args.reservationId) {
+      data.assignedTable = { disconnect: true };
+    }
+    if (args.reservationId) {
+      await context.sudo().db.Reservation.updateOne({
+        where: { id: args.reservationId },
+        data
+      });
+    } else {
+      await context.sudo().db.Reservation.createOne({ data });
+    }
+    return { success: true, error: null };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+async function updateReservationStatus(root, args, context) {
+  if (!permissions.canManageTables({ session: context.session })) {
+    return { success: false, error: "Not authorized to manage reservations" };
+  }
+  if (!args.reservationId) return { success: false, error: "Reservation is required" };
+  try {
+    const sudo = context.sudo();
+    const reservation = await sudo.query.Reservation.findOne({
+      where: { id: args.reservationId },
+      query: "id status partySize duration reservationDate assignedTable { id tableNumber status }"
+    });
+    if (!reservation) return { success: false, error: "Reservation not found" };
+    if (TERMINAL_RESERVATION_STATUSES.includes(reservation.status || "")) {
+      return { success: false, error: "This reservation is already closed" };
+    }
+    if (args.action === "pending") {
+      await sudo.db.Reservation.updateOne({ where: { id: args.reservationId }, data: { status: "pending" } });
+    } else if (args.action === "confirm") {
+      await sudo.db.Reservation.updateOne({ where: { id: args.reservationId }, data: { status: "confirmed" } });
+    } else if (args.action === "seat") {
+      const tableId = args.tableId || reservation.assignedTable?.id;
+      if (!tableId) return { success: false, error: "Assign a table before seating" };
+      await assertTableAssignable({
+        tableId,
+        party: partySize(reservation.partySize),
+        reservationStart: reservation.reservationDate,
+        duration: minutes(reservation.duration),
+        reservationId: reservation.id,
+        context
+      });
+      const table = await sudo.query.Table.findOne({ where: { id: tableId }, query: "id status tableNumber" });
+      if (!table) return { success: false, error: "Table not found" };
+      if (!["available", "reserved"].includes(table.status || "")) {
+        return { success: false, error: `Table ${table.tableNumber || ""} is not available to seat` };
+      }
+      await sudo.db.Reservation.updateOne({
+        where: { id: args.reservationId },
+        data: {
+          status: "seated",
+          assignedTable: { connect: { id: tableId } }
+        }
+      });
+      await sudo.db.Table.updateOne({ where: { id: tableId }, data: { status: "occupied" } });
+    } else if (args.action === "complete") {
+      await sudo.db.Reservation.updateOne({ where: { id: args.reservationId }, data: { status: "completed" } });
+      if (reservation.assignedTable?.id && reservation.assignedTable.status === "occupied") {
+        await sudo.db.Table.updateOne({ where: { id: reservation.assignedTable.id }, data: { status: "cleaning" } });
+      }
+    } else if (args.action === "cancel") {
+      await sudo.db.Reservation.updateOne({ where: { id: args.reservationId }, data: { status: "cancelled" } });
+      if (reservation.assignedTable?.id && reservation.assignedTable.status === "reserved") {
+        await sudo.db.Table.updateOne({ where: { id: reservation.assignedTable.id }, data: { status: "available" } });
+      }
+    } else if (args.action === "no_show") {
+      await sudo.db.Reservation.updateOne({ where: { id: args.reservationId }, data: { status: "no_show" } });
+      if (reservation.assignedTable?.id && reservation.assignedTable.status === "reserved") {
+        await sudo.db.Table.updateOne({ where: { id: reservation.assignedTable.id }, data: { status: "available" } });
+      }
+    } else {
+      return { success: false, error: "Invalid reservation action" };
+    }
+    return { success: true, error: null };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+
+// features/keystone/mutations/shiftManagement.ts
+var VALID_ROLES = ["server", "bartender", "host", "busser", "cook", "dishwasher", "manager"];
+var OPEN_SHIFT_STATUSES = ["scheduled", "started"];
+function parseShiftWindow(startValue, endValue) {
+  const start = new Date(startValue);
+  const end = new Date(endValue);
+  if (Number.isNaN(start.getTime())) throw new Error("Shift start time is invalid");
+  if (Number.isNaN(end.getTime())) throw new Error("Shift end time is invalid");
+  if (end <= start) throw new Error("Shift end time must be after start time");
+  return { start, end };
+}
+async function assertNoStaffOverlap({
+  staffId,
+  startTime,
+  endTime,
+  shiftId,
+  context
+}) {
+  if (!staffId) return;
+  const { start, end } = parseShiftWindow(startTime, endTime);
+  const dayStart = new Date(start);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(start);
+  dayEnd.setHours(23, 59, 59, 999);
+  const shifts = await context.sudo().query.Shift.findMany({
+    where: {
+      staff: { id: { equals: staffId } },
+      startTime: { gte: dayStart.toISOString(), lte: dayEnd.toISOString() },
+      status: { in: OPEN_SHIFT_STATUSES }
+    },
+    query: "id startTime endTime status"
+  });
+  const overlapping = shifts.filter((shift) => {
+    if (shiftId && shift.id === shiftId) return false;
+    const existingStart = new Date(shift.startTime);
+    const existingEnd = new Date(shift.endTime);
+    return existingStart < end && start < existingEnd;
+  });
+  if (overlapping.length > 0) {
+    throw new Error("This staff member already has an overlapping open shift");
+  }
+}
+async function upsertShift(root, args, context) {
+  if (!permissions.canManageStaff({ session: context.session })) {
+    return { success: false, error: "Not authorized to manage shifts" };
+  }
+  if (!VALID_ROLES.includes(args.role)) return { success: false, error: "Invalid shift role" };
+  try {
+    parseShiftWindow(args.startTime, args.endTime);
+    if (args.staffId) {
+      const staff = await context.sudo().query.User.findOne({
+        where: { id: args.staffId },
+        query: "id name isActive"
+      });
+      if (!staff) return { success: false, error: "Staff member not found" };
+      if (staff.isActive === false) return { success: false, error: "Cannot schedule an inactive staff member" };
+    }
+    await assertNoStaffOverlap({
+      staffId: args.staffId,
+      startTime: args.startTime,
+      endTime: args.endTime,
+      shiftId: args.shiftId,
+      context
+    });
+    const data = {
+      startTime: new Date(args.startTime).toISOString(),
+      endTime: new Date(args.endTime).toISOString(),
+      role: args.role,
+      hourlyRate: args.hourlyRate || void 0,
+      staff: args.staffId ? { connect: { id: args.staffId } } : { disconnect: true }
+    };
+    if (args.shiftId) {
+      await context.sudo().db.Shift.updateOne({ where: { id: args.shiftId }, data });
+    } else {
+      await context.sudo().db.Shift.createOne({ data: { ...data, status: "scheduled" } });
+    }
+    return { success: true, error: null };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+async function updateShiftStatus(root, args, context) {
+  if (!permissions.canManageStaff({ session: context.session })) {
+    return { success: false, error: "Not authorized to manage shifts" };
+  }
+  if (!args.shiftId) return { success: false, error: "Shift is required" };
+  try {
+    const sudo = context.sudo();
+    const shift = await sudo.query.Shift.findOne({
+      where: { id: args.shiftId },
+      query: "id status clockIn clockOut"
+    });
+    if (!shift) return { success: false, error: "Shift not found" };
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    if (args.action === "start") {
+      if (shift.status !== "scheduled") return { success: false, error: "Only scheduled shifts can be started" };
+      await sudo.db.Shift.updateOne({ where: { id: args.shiftId }, data: { status: "started", clockIn: now } });
+    } else if (args.action === "complete") {
+      if (shift.status !== "started") return { success: false, error: "Only started shifts can be completed" };
+      await sudo.db.Shift.updateOne({ where: { id: args.shiftId }, data: { status: "completed", clockOut: now } });
+    } else if (args.action === "no_show") {
+      if (shift.status !== "scheduled") return { success: false, error: "Only scheduled shifts can be marked no-show" };
+      await sudo.db.Shift.updateOne({ where: { id: args.shiftId }, data: { status: "no_show" } });
+    } else if (args.action === "cancel") {
+      if (!["scheduled", "started"].includes(shift.status || "")) return { success: false, error: "This shift is already closed" };
+      await sudo.db.Shift.updateOne({ where: { id: args.shiftId }, data: { status: "called_out" } });
+    } else {
+      return { success: false, error: "Invalid shift action" };
+    }
+    return { success: true, error: null };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+
+// features/keystone/mutations/tipManagement.ts
+var ROLE_PERCENTAGES = {
+  server: 60,
+  bartender: 20,
+  busser: 10,
+  host: 10
+};
+function dollarsToCents(value) {
+  const parsed = Number(value || 0);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.round(parsed * 100));
+}
+function getBusinessDayWindow(date) {
+  const start = new Date(date);
+  if (Number.isNaN(start.getTime())) throw new Error("Business date is invalid");
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setHours(23, 59, 59, 999);
+  return { start, end };
+}
+function calculateHours(entry) {
+  if (typeof entry.hoursWorked === "number") return entry.hoursWorked;
+  if (!entry.clockIn || !entry.clockOut) return 0;
+  const start = new Date(entry.clockIn);
+  const end = new Date(entry.clockOut);
+  return Math.max(0, Math.round((end.getTime() - start.getTime()) / 36e5 * 100) / 100);
+}
+async function calculateDistributions({
+  tipPoolType,
+  totalTipsCents,
+  startDate,
+  endDate,
+  context
+}) {
+  if (tipPoolType === "individual") return [];
+  const entries = await context.sudo().query.Shift.findMany({
+    where: {
+      status: { equals: "completed" },
+      clockIn: { gte: startDate, lte: endDate }
+    },
+    query: "id role hoursWorked clockIn clockOut staff { id name }"
+  });
+  const distributions = [];
+  if (tipPoolType === "house_pool") {
+    const eligible = entries.map((entry) => ({ ...entry, hours: calculateHours(entry) })).filter((entry) => entry.staff?.id && entry.hours > 0);
+    const totalHours = eligible.reduce((sum, entry) => sum + entry.hours, 0);
+    for (const entry of eligible) {
+      const shareCents = totalHours > 0 ? Math.round(entry.hours / totalHours * totalTipsCents) : 0;
+      distributions.push({
+        staffId: entry.staff.id,
+        staffName: entry.staff.name,
+        role: entry.role,
+        hoursWorked: entry.hours,
+        amount: shareCents
+      });
+    }
+  } else if (tipPoolType === "pool_by_role") {
+    const roleGroups = {};
+    for (const entry of entries) {
+      const hours = calculateHours(entry);
+      if (!entry.staff?.id || hours <= 0) continue;
+      const role = entry.role || "server";
+      if (!roleGroups[role]) roleGroups[role] = [];
+      roleGroups[role].push({ ...entry, hours });
+    }
+    for (const [role, roleEntries] of Object.entries(roleGroups)) {
+      const rolePercent = ROLE_PERCENTAGES[role] || 10;
+      const roleTipsCents = Math.round(rolePercent / 100 * totalTipsCents);
+      const totalRoleHours = roleEntries.reduce((sum, entry) => sum + entry.hours, 0);
+      for (const entry of roleEntries) {
+        const shareCents = totalRoleHours > 0 ? Math.round(entry.hours / totalRoleHours * roleTipsCents) : 0;
+        distributions.push({
+          staffId: entry.staff.id,
+          staffName: entry.staff.name,
+          role,
+          hoursWorked: entry.hours,
+          amount: shareCents
+        });
+      }
+    }
+  }
+  return distributions;
+}
+async function createTipPoolLedger(root, args, context) {
+  if (!permissions.canManageStaff({ session: context.session })) {
+    return { success: false, error: "Not authorized to manage tip pools" };
+  }
+  if (!["individual", "pool_by_role", "house_pool"].includes(args.tipPoolType)) {
+    return { success: false, error: "Invalid tip pool type" };
+  }
+  try {
+    const { start, end } = getBusinessDayWindow(args.date);
+    const cashTips = dollarsToCents(args.cashTips);
+    const creditTips = dollarsToCents(args.creditTips);
+    const totalTips = cashTips + creditTips;
+    if (totalTips <= 0) return { success: false, error: "Tip pool must include cash or credit tips" };
+    const existing = await context.sudo().query.TipPool.findMany({
+      where: {
+        date: { gte: start.toISOString(), lte: end.toISOString() },
+        tipPoolType: { equals: args.tipPoolType },
+        status: { in: ["open", "calculated"] }
+      },
+      query: "id status tipPoolType",
+      take: 1
+    });
+    if (existing.length > 0) {
+      return { success: false, error: "An open or calculated tip pool already exists for this date and type" };
+    }
+    const distributions = await calculateDistributions({
+      tipPoolType: args.tipPoolType,
+      totalTipsCents: totalTips,
+      startDate: start.toISOString(),
+      endDate: end.toISOString(),
+      context
+    });
+    if (args.tipPoolType !== "individual" && distributions.length === 0) {
+      return { success: false, error: "No completed shifts found for this tip pool" };
+    }
+    await context.sudo().db.TipPool.createOne({
+      data: {
+        date: start.toISOString(),
+        tipPoolType: args.tipPoolType,
+        totalTips,
+        cashTips,
+        creditTips,
+        distributions,
+        status: "calculated",
+        createdBy: context.session?.itemId ? { connect: { id: context.session.itemId } } : void 0
+      }
+    });
+    return { success: true, error: null };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+async function updateTipPoolStatus(root, args, context) {
+  if (!permissions.canManageStaff({ session: context.session })) {
+    return { success: false, error: "Not authorized to manage tip pools" };
+  }
+  try {
+    const tipPool = await context.sudo().query.TipPool.findOne({
+      where: { id: args.tipPoolId },
+      query: "id status"
+    });
+    if (!tipPool) return { success: false, error: "Tip pool not found" };
+    if (args.action === "distribute") {
+      if (tipPool.status !== "calculated") return { success: false, error: "Only calculated tip pools can be distributed" };
+      await context.sudo().db.TipPool.updateOne({ where: { id: args.tipPoolId }, data: { status: "distributed" } });
+    } else if (args.action === "reopen") {
+      if (tipPool.status !== "distributed") return { success: false, error: "Only distributed tip pools can be reopened" };
+      await context.sudo().db.TipPool.updateOne({ where: { id: args.tipPoolId }, data: { status: "calculated" } });
+    } else {
+      return { success: false, error: "Invalid tip pool action" };
+    }
+    return { success: true, error: null };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+  }
+}
+
 // features/keystone/mutations/index.ts
 var graphql15 = String.raw;
 function extendGraphqlSchema(baseSchema) {
@@ -6774,6 +7659,94 @@ function extendGraphqlSchema(baseSchema) {
           items: [POSOrderItemInput!]!
         ): RestaurantOrder
 
+        addServiceFloorItem(
+          orderId: ID
+          tableId: ID!
+          menuItemId: ID!
+          quantity: Int!
+          courseNumber: Int
+          seatNumber: Int
+          specialInstructions: String
+        ): RestaurantOrder
+
+        updateServiceFloorItem(
+          orderItemId: ID!
+          quantity: Int
+          courseNumber: Int
+          seatNumber: Int
+          specialInstructions: String
+          voidReason: String
+        ): RestaurantOrder
+
+        updateServiceFloorTableStatus(
+          tableId: ID!
+          status: String!
+        ): ServiceFloorMutationResult
+
+        updateServiceFloorCheckStatus(
+          orderId: ID!
+          action: String!
+        ): ServiceFloorMutationResult
+
+        createWaitlistGuest(
+          customerName: String!
+          phoneNumber: String!
+          partySize: Int!
+          quotedWaitTime: Int
+          notes: String
+        ): WaitlistMutationResult
+
+        updateWaitlistStatus(
+          entryId: ID!
+          action: String!
+          tableId: ID
+        ): WaitlistMutationResult
+
+        upsertReservation(
+          reservationId: ID
+          customerName: String!
+          customerPhone: String
+          customerEmail: String
+          reservationDate: String!
+          partySize: Int!
+          duration: Int
+          status: String
+          specialRequests: String
+          assignedTableId: ID
+        ): ReservationMutationResult
+
+        updateReservationStatus(
+          reservationId: ID!
+          action: String!
+          tableId: ID
+        ): ReservationMutationResult
+
+        upsertShift(
+          shiftId: ID
+          staffId: ID
+          role: String!
+          startTime: String!
+          endTime: String!
+          hourlyRate: String
+        ): ShiftMutationResult
+
+        updateShiftStatus(
+          shiftId: ID!
+          action: String!
+        ): ShiftMutationResult
+
+        createTipPoolLedger(
+          date: String!
+          tipPoolType: String!
+          cashTips: String!
+          creditTips: String!
+        ): TipPoolMutationResult
+
+        updateTipPoolStatus(
+          tipPoolId: ID!
+          action: String!
+        ): TipPoolMutationResult
+
         transferTable(
           orderId: String!
           fromTableId: String!
@@ -6862,6 +7835,31 @@ function extendGraphqlSchema(baseSchema) {
         error: String
       }
 
+      type ServiceFloorMutationResult {
+        success: Boolean!
+        error: String
+      }
+
+      type WaitlistMutationResult {
+        success: Boolean!
+        error: String
+      }
+
+      type ReservationMutationResult {
+        success: Boolean!
+        error: String
+      }
+
+      type ShiftMutationResult {
+        success: Boolean!
+        error: String
+      }
+
+      type TipPoolMutationResult {
+        success: Boolean!
+        error: String
+      }
+
       type CourseManagementResult {
         success: Boolean!
         error: String
@@ -6908,6 +7906,18 @@ function extendGraphqlSchema(baseSchema) {
         initiatePaymentSession,
         completeActiveCart,
         createPOSOrder,
+        addServiceFloorItem,
+        updateServiceFloorItem,
+        updateServiceFloorTableStatus,
+        updateServiceFloorCheckStatus,
+        createWaitlistGuest: createWaitlistEntry,
+        updateWaitlistStatus,
+        upsertReservation,
+        updateReservationStatus,
+        upsertShift,
+        updateShiftStatus,
+        createTipPoolLedger,
+        updateTipPoolStatus,
         transferTable,
         combineTables,
         fireCourse,

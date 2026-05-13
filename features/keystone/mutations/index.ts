@@ -19,6 +19,13 @@ import { fireCourse, recallCourse } from "./courseManagement";
 import { syncKitchenTickets, updateKitchenTicketStatus, fulfillKitchenTicketItem } from "./kdsTickets";
 import handlePaymentProviderWebhook from "./handlePaymentProviderWebhook";
 import createPOSOrder from "./createPOSOrder";
+import addServiceFloorItem from "./addServiceFloorItem";
+import updateServiceFloorItem from "./updateServiceFloorItem";
+import { updateServiceFloorCheckStatus, updateServiceFloorTableStatus } from "./serviceFloorTable";
+import { createWaitlistEntry, updateWaitlistStatus } from "./waitlistManagement";
+import { updateReservationStatus, upsertReservation } from "./reservationManagement";
+import { updateShiftStatus, upsertShift } from "./shiftManagement";
+import { createTipPoolLedger, updateTipPoolStatus } from "./tipManagement";
 
 const graphql = String.raw;
 
@@ -111,6 +118,94 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
           items: [POSOrderItemInput!]!
         ): RestaurantOrder
 
+        addServiceFloorItem(
+          orderId: ID
+          tableId: ID!
+          menuItemId: ID!
+          quantity: Int!
+          courseNumber: Int
+          seatNumber: Int
+          specialInstructions: String
+        ): RestaurantOrder
+
+        updateServiceFloorItem(
+          orderItemId: ID!
+          quantity: Int
+          courseNumber: Int
+          seatNumber: Int
+          specialInstructions: String
+          voidReason: String
+        ): RestaurantOrder
+
+        updateServiceFloorTableStatus(
+          tableId: ID!
+          status: String!
+        ): ServiceFloorMutationResult
+
+        updateServiceFloorCheckStatus(
+          orderId: ID!
+          action: String!
+        ): ServiceFloorMutationResult
+
+        createWaitlistGuest(
+          customerName: String!
+          phoneNumber: String!
+          partySize: Int!
+          quotedWaitTime: Int
+          notes: String
+        ): WaitlistMutationResult
+
+        updateWaitlistStatus(
+          entryId: ID!
+          action: String!
+          tableId: ID
+        ): WaitlistMutationResult
+
+        upsertReservation(
+          reservationId: ID
+          customerName: String!
+          customerPhone: String
+          customerEmail: String
+          reservationDate: String!
+          partySize: Int!
+          duration: Int
+          status: String
+          specialRequests: String
+          assignedTableId: ID
+        ): ReservationMutationResult
+
+        updateReservationStatus(
+          reservationId: ID!
+          action: String!
+          tableId: ID
+        ): ReservationMutationResult
+
+        upsertShift(
+          shiftId: ID
+          staffId: ID
+          role: String!
+          startTime: String!
+          endTime: String!
+          hourlyRate: String
+        ): ShiftMutationResult
+
+        updateShiftStatus(
+          shiftId: ID!
+          action: String!
+        ): ShiftMutationResult
+
+        createTipPoolLedger(
+          date: String!
+          tipPoolType: String!
+          cashTips: String!
+          creditTips: String!
+        ): TipPoolMutationResult
+
+        updateTipPoolStatus(
+          tipPoolId: ID!
+          action: String!
+        ): TipPoolMutationResult
+
         transferTable(
           orderId: String!
           fromTableId: String!
@@ -199,6 +294,31 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         error: String
       }
 
+      type ServiceFloorMutationResult {
+        success: Boolean!
+        error: String
+      }
+
+      type WaitlistMutationResult {
+        success: Boolean!
+        error: String
+      }
+
+      type ReservationMutationResult {
+        success: Boolean!
+        error: String
+      }
+
+      type ShiftMutationResult {
+        success: Boolean!
+        error: String
+      }
+
+      type TipPoolMutationResult {
+        success: Boolean!
+        error: String
+      }
+
       type CourseManagementResult {
         success: Boolean!
         error: String
@@ -245,6 +365,18 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         initiatePaymentSession,
         completeActiveCart,
         createPOSOrder,
+        addServiceFloorItem,
+        updateServiceFloorItem,
+        updateServiceFloorTableStatus,
+        updateServiceFloorCheckStatus,
+        createWaitlistGuest: createWaitlistEntry,
+        updateWaitlistStatus,
+        upsertReservation,
+        updateReservationStatus,
+        upsertShift,
+        updateShiftStatus,
+        createTipPoolLedger,
+        updateTipPoolStatus,
         transferTable,
         combineTables,
         fireCourse,

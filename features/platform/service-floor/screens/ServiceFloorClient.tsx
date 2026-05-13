@@ -18,6 +18,8 @@ import {
   Layers,
   Flame,
   PauseCircle,
+  Pencil,
+  Trash2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { formatCurrency } from '@/features/storefront/lib/currency'
@@ -35,7 +37,15 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { PageBreadcrumbs } from '@/features/dashboard/components/PageBreadcrumbs'
 
 interface Table {
@@ -65,7 +75,15 @@ interface ActiveOrder {
     quantity: number
     price: number
     seatNumber?: number | null
+    courseNumber?: number | null
+    specialInstructions?: string | null
     menuItem: { id: string; name: string } | null
+  }[]
+  payments: {
+    id: string
+    amount: number
+    status: string
+    paymentMethod?: string | null
   }[]
 }
 
@@ -91,7 +109,8 @@ const GET_SERVICE_FLOOR = gql`
       id orderNumber status total guestCount createdAt
       tables { id tableNumber }
       courses(orderBy: { courseNumber: asc }) { id courseType courseNumber status onHold }
-      orderItems { id quantity price seatNumber menuItem { id name } }
+      orderItems { id quantity price seatNumber courseNumber specialInstructions menuItem { id name } }
+      payments { id amount status paymentMethod }
     }
     menuItems(where: { available: { equals: true } }, orderBy: { name: asc }) {
       id name price available
@@ -101,41 +120,70 @@ const GET_SERVICE_FLOOR = gql`
 `
 
 const UPDATE_TABLE_STATUS = gql`
-  mutation UpdateTableStatus($id: ID!, $status: String!) {
-    updateTable(where: { id: $id }, data: { status: $status }) { id status }
+  mutation UpdateServiceFloorTableStatus($tableId: ID!, $status: String!) {
+    updateServiceFloorTableStatus(tableId: $tableId, status: $status) { success error }
   }
 `
 
-const CREATE_ORDER = gql`
-  mutation CreateOrder($data: RestaurantOrderCreateInput!) {
-    createRestaurantOrder(data: $data) { id orderNumber status }
-  }
-`
-
-const CREATE_ORDER_ITEM = gql`
-  mutation CreateOrderItem($data: OrderItemCreateInput!) {
-    createOrderItem(data: $data) { id }
-  }
-`
-
-const GET_ORDER_ITEMS = gql`
-  query GetOrderItems($id: ID!) {
-    restaurantOrder(where: { id: $id }) {
+const ADD_SERVICE_FLOOR_ITEM = gql`
+  mutation AddServiceFloorItem(
+    $orderId: ID
+    $tableId: ID!
+    $menuItemId: ID!
+    $quantity: Int!
+    $courseNumber: Int
+    $seatNumber: Int
+    $specialInstructions: String
+  ) {
+    addServiceFloorItem(
+      orderId: $orderId
+      tableId: $tableId
+      menuItemId: $menuItemId
+      quantity: $quantity
+      courseNumber: $courseNumber
+      seatNumber: $seatNumber
+      specialInstructions: $specialInstructions
+    ) {
       id
-      orderItems { id quantity price }
+      orderNumber
+      status
+      subtotal
+      tax
+      total
     }
   }
 `
 
-const UPDATE_ORDER_TOTALS = gql`
-  mutation UpdateOrderTotals($id: ID!, $data: RestaurantOrderUpdateInput!) {
-    updateRestaurantOrder(where: { id: $id }, data: $data) { id total status }
+const UPDATE_SERVICE_FLOOR_ITEM = gql`
+  mutation UpdateServiceFloorItem(
+    $orderItemId: ID!
+    $quantity: Int
+    $courseNumber: Int
+    $seatNumber: Int
+    $specialInstructions: String
+    $voidReason: String
+  ) {
+    updateServiceFloorItem(
+      orderItemId: $orderItemId
+      quantity: $quantity
+      courseNumber: $courseNumber
+      seatNumber: $seatNumber
+      specialInstructions: $specialInstructions
+      voidReason: $voidReason
+    ) {
+      id
+      orderNumber
+      status
+      subtotal
+      tax
+      total
+    }
   }
 `
 
-const UPDATE_ORDER_STATUS = gql`
-  mutation UpdateOrderStatus($id: ID!, $data: RestaurantOrderUpdateInput!) {
-    updateRestaurantOrder(where: { id: $id }, data: $data) { id status }
+const UPDATE_CHECK_STATUS = gql`
+  mutation UpdateServiceFloorCheckStatus($orderId: ID!, $action: String!) {
+    updateServiceFloorCheckStatus(orderId: $orderId, action: $action) { success error }
   }
 `
 
@@ -194,16 +242,23 @@ const statusDot: Record<Table['status'], string> = {
   cleaning: 'bg-zinc-400',
 }
 
-function generateOrderNumber() {
-  return `DIN-${Date.now().toString(36).toUpperCase()}`
-}
-
 function formatCourseLabel(courseType: string, courseNumber: number) {
   return `${courseType.charAt(0).toUpperCase() + courseType.slice(1)} · C${courseNumber}`
 }
 
 function formatStatusLabel(value: string) {
   return value.replace(/_/g, ' ')
+}
+
+function getPaidAmount(order?: ActiveOrder | null) {
+  return (order?.payments || [])
+    .filter(payment => payment.status === 'succeeded')
+    .reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
+}
+
+function getBalanceDue(order?: ActiveOrder | null) {
+  if (!order) return 0
+  return Math.max(0, Number(order.total || 0) - getPaidAmount(order))
 }
 
 export function ServiceFloorClient() {
@@ -221,7 +276,16 @@ export function ServiceFloorClient() {
   const [selectedTable, setSelectedTable] = useState<Table | null>(null)
   const [selectedMenuItemId, setSelectedMenuItemId] = useState<string>('')
   const [quantity, setQuantity] = useState<number>(1)
+  const [courseNumber, setCourseNumber] = useState<number>(1)
+  const [seatNumber, setSeatNumber] = useState<number>(1)
+  const [itemNotes, setItemNotes] = useState<string>('')
   const [addingItem, setAddingItem] = useState(false)
+  const [editingItem, setEditingItem] = useState<ActiveOrder['orderItems'][number] | null>(null)
+  const [editQuantity, setEditQuantity] = useState<number>(1)
+  const [editCourseNumber, setEditCourseNumber] = useState<number>(1)
+  const [editSeatNumber, setEditSeatNumber] = useState<number>(1)
+  const [editItemNotes, setEditItemNotes] = useState<string>('')
+  const [voidReason, setVoidReason] = useState<string>('')
   const [sheetError, setSheetError] = useState<string | null>(null)
   const [sheetSuccess, setSheetSuccess] = useState<string | null>(null)
 
@@ -315,7 +379,10 @@ export function ServiceFloorClient() {
   const updateTableStatus = async (tableId: string, nextStatus: Table['status']) => {
     await withAction(`table:${tableId}`, async () => {
       setUpdatingTable(tableId)
-      await request('/api/graphql', UPDATE_TABLE_STATUS, { id: tableId, status: nextStatus })
+      const res: any = await request('/api/graphql', UPDATE_TABLE_STATUS, { tableId, status: nextStatus })
+      if (!res?.updateServiceFloorTableStatus?.success) {
+        throw new Error(res?.updateServiceFloorTableStatus?.error || 'Unable to update table status')
+      }
       await fetchData()
     })
     setUpdatingTable(null)
@@ -329,14 +396,6 @@ export function ServiceFloorClient() {
     setDragTableId(null)
   }
 
-  const recalcAndPersistOrderTotals = async (orderId: string) => {
-    const res: any = await request('/api/graphql', GET_ORDER_ITEMS, { id: orderId })
-    const items = res?.restaurantOrder?.orderItems || []
-    const subtotal = items.reduce((sum: number, item: any) => sum + (item.quantity || 0) * (item.price || 0), 0)
-    const tax = Math.round(subtotal * (Number(currencyConfig.taxRate || 0) / 100))
-    await request('/api/graphql', UPDATE_ORDER_TOTALS, { id: orderId, data: { subtotal, tax, total: subtotal + tax } })
-  }
-
   const addItemToTable = async () => {
     if (!selectedTable || !selectedMenuItemId || quantity < 1) return
     await withAction('add-item', async () => {
@@ -344,43 +403,95 @@ export function ServiceFloorClient() {
       const menuItem = menuItemMap[selectedMenuItemId]
       if (!menuItem) throw new Error('Select a valid menu item')
 
-      let orderId = selectedOrder?.id
-      if (!orderId) {
-        const orderRes: any = await request('/api/graphql', CREATE_ORDER, {
-          data: {
-            orderNumber: generateOrderNumber(),
-            orderType: 'dine_in', orderSource: 'pos', status: 'open',
-            guestCount: 1, subtotal: 0, tax: 0, total: 0,
-            tables: { connect: [{ id: selectedTable.id }] },
-          },
-        })
-        orderId = orderRes?.createRestaurantOrder?.id
-      }
-      if (!orderId) throw new Error('Unable to create or find active order for this table')
+      const orderId = selectedOrder?.id || null
 
-      await request('/api/graphql', CREATE_ORDER_ITEM, {
-        data: {
-          order: { connect: { id: orderId } },
-          menuItem: { connect: { id: selectedMenuItemId } },
-          quantity, price: menuItem.price, specialInstructions: '',
-        },
+      const res: any = await request('/api/graphql', ADD_SERVICE_FLOOR_ITEM, {
+        orderId,
+        tableId: selectedTable.id,
+        menuItemId: selectedMenuItemId,
+        quantity,
+        courseNumber,
+        seatNumber,
+        specialInstructions: itemNotes.trim() || null,
       })
-      await recalcAndPersistOrderTotals(orderId)
+
+      if (!res?.addServiceFloorItem?.id) {
+        throw new Error('Unable to add item to this check')
+      }
       await fetchData()
       setQuantity(1)
+      setCourseNumber(1)
+      setSeatNumber(1)
+      setItemNotes('')
       setSelectedMenuItemId('')
       setSheetSuccess('Item added to check')
     })
     setAddingItem(false)
   }
 
-  const sendOrderToKitchen = async (orderId: string) => {
-    await withAction('send-kitchen', async () => {
-      await request('/api/graphql', UPDATE_ORDER_STATUS, { id: orderId, data: { status: 'sent_to_kitchen' } })
+  const openEditItem = (item: ActiveOrder['orderItems'][number]) => {
+    setEditingItem(item)
+    setEditQuantity(Math.max(1, item.quantity || 1))
+    setEditCourseNumber(Math.max(1, item.courseNumber || 1))
+    setEditSeatNumber(Math.max(1, item.seatNumber || 1))
+    setEditItemNotes(item.specialInstructions || '')
+    setVoidReason('')
+  }
+
+  const saveEditItem = async () => {
+    if (!editingItem) return
+    await withAction(`edit-item:${editingItem.id}`, async () => {
+      const res: any = await request('/api/graphql', UPDATE_SERVICE_FLOOR_ITEM, {
+        orderItemId: editingItem.id,
+        quantity: editQuantity,
+        courseNumber: editCourseNumber,
+        seatNumber: editSeatNumber,
+        specialInstructions: editItemNotes.trim() || '',
+      })
+      if (!res?.updateServiceFloorItem?.id) throw new Error('Unable to update item')
       await fetchData()
-      setSheetSuccess('Order sent to kitchen')
+      setEditingItem(null)
+      setSheetSuccess('Item updated')
     })
   }
+
+  const voidEditItem = async () => {
+    if (!editingItem) return
+    const reason = voidReason.trim()
+    if (!reason) {
+      setSheetError('Void reason is required')
+      return
+    }
+    await withAction(`void-item:${editingItem.id}`, async () => {
+      const res: any = await request('/api/graphql', UPDATE_SERVICE_FLOOR_ITEM, {
+        orderItemId: editingItem.id,
+        voidReason: reason,
+      })
+      if (!res?.updateServiceFloorItem?.id) throw new Error('Unable to void item')
+      await fetchData()
+      setEditingItem(null)
+      setSheetSuccess('Item voided from check')
+    })
+  }
+
+  const updateCheckStatus = async (orderId: string, action: 'send_to_kitchen' | 'mark_served' | 'close_check' | 'cancel_check') => {
+    await withAction(`check:${action}`, async () => {
+      const res: any = await request('/api/graphql', UPDATE_CHECK_STATUS, { orderId, action })
+      if (!res?.updateServiceFloorCheckStatus?.success) {
+        throw new Error(res?.updateServiceFloorCheckStatus?.error || 'Unable to update check')
+      }
+      await fetchData()
+      const labels: Record<string, string> = {
+        send_to_kitchen: 'Order sent to kitchen',
+        mark_served: 'Check marked served',
+        close_check: 'Check closed',
+        cancel_check: 'Check cancelled',
+      }
+      setSheetSuccess(labels[action])
+    })
+  }
+
+  const sendOrderToKitchen = async (orderId: string) => updateCheckStatus(orderId, 'send_to_kitchen')
 
   const splitByGuests = async () => {
     if (!selectedOrder) return
@@ -557,6 +668,12 @@ export function ServiceFloorClient() {
                                 <span>{activeOrder.guestCount || 1} guests</span>
                                 <span className="font-medium text-foreground">{formatCurrency(activeOrder.total || 0, currencyConfig)}</span>
                               </div>
+                              {getPaidAmount(activeOrder) > 0 ? (
+                                <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                                  <span>Paid {formatCurrency(getPaidAmount(activeOrder), currencyConfig)}</span>
+                                  <span>Due {formatCurrency(getBalanceDue(activeOrder), currencyConfig)}</span>
+                                </div>
+                              ) : null}
                             </div>
                           ) : (
                             <p className="text-[11px] text-muted-foreground">No active check</p>
@@ -602,8 +719,22 @@ export function ServiceFloorClient() {
                       <p className="text-[11px] text-muted-foreground mt-0.5 uppercase tracking-wider">{formatStatusLabel(selectedOrder.status)}</p>
                     </div>
                     <div className="text-right">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Balance</p>
+                      <p className="text-sm font-semibold">{formatCurrency(getBalanceDue(selectedOrder), currencyConfig)}</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-3 gap-2 rounded-md border border-border bg-background p-2 text-center">
+                    <div>
                       <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Total</p>
-                      <p className="text-sm font-semibold">{formatCurrency(selectedOrder.total || 0, currencyConfig)}</p>
+                      <p className="text-xs font-semibold">{formatCurrency(selectedOrder.total || 0, currencyConfig)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Paid</p>
+                      <p className="text-xs font-semibold text-emerald-600">{formatCurrency(getPaidAmount(selectedOrder), currencyConfig)}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Due</p>
+                      <p className="text-xs font-semibold text-primary">{formatCurrency(getBalanceDue(selectedOrder), currencyConfig)}</p>
                     </div>
                   </div>
                   {(selectedOrder.orderItems || []).length > 0 && (
@@ -646,25 +777,96 @@ export function ServiceFloorClient() {
                     ))}
                   </SelectContent>
                 </Select>
-                <div className="flex items-center gap-2">
-                  <Input
-                    type="number"
-                    min={1}
-                    value={quantity}
-                    onChange={e => setQuantity(Math.max(1, parseInt(e.target.value || '1', 10)))}
-                    className="w-20 h-8 text-xs"
-                  />
-                  <Button
-                    size="sm"
-                    onClick={addItemToTable}
-                    disabled={!selectedMenuItemId || addingItem}
-                    className="h-8 text-xs"
-                  >
-                    <Plus size={12} className="mr-1" />
-                    {addingItem ? 'Adding…' : 'Add'}
-                  </Button>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Qty</p>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={quantity}
+                      onChange={e => setQuantity(Math.max(1, parseInt(e.target.value || '1', 10)))}
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Course</p>
+                    <Select value={String(courseNumber)} onValueChange={value => setCourseNumber(parseInt(value, 10))}>
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1" className="text-xs">1 · Apps</SelectItem>
+                        <SelectItem value="2" className="text-xs">2 · Mains</SelectItem>
+                        <SelectItem value="3" className="text-xs">3 · Dessert</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Seat</p>
+                    <Input
+                      type="number"
+                      min={1}
+                      value={seatNumber}
+                      onChange={e => setSeatNumber(Math.max(1, parseInt(e.target.value || '1', 10)))}
+                      className="h-8 text-xs"
+                    />
+                  </div>
                 </div>
+                <Textarea
+                  value={itemNotes}
+                  onChange={e => setItemNotes(e.target.value)}
+                  placeholder="Item notes, allergies, fire timing…"
+                  className="min-h-16 text-xs"
+                />
+                <Button
+                  size="sm"
+                  onClick={addItemToTable}
+                  disabled={!selectedMenuItemId || addingItem}
+                  className="h-8 w-full text-xs"
+                >
+                  <Plus size={12} className="mr-1" />
+                  {addingItem ? 'Adding item…' : selectedOrder ? 'Add to check' : 'Start check with item'}
+                </Button>
               </div>
+
+              {/* Check items */}
+              {selectedOrder && (
+                <div className="rounded-lg border border-border bg-card p-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Check Items</p>
+                    <span className="text-[11px] text-muted-foreground">{selectedOrder.orderItems?.length || 0} items</span>
+                  </div>
+                  {(selectedOrder.orderItems || []).length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No items on this check yet.</p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {(selectedOrder.orderItems || []).map(item => (
+                        <div key={item.id} className="flex items-start justify-between gap-2 rounded border border-border bg-background px-3 py-2">
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-medium">
+                              {item.quantity}× {item.menuItem?.name || 'Item'}
+                            </p>
+                            <p className="mt-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                              Course {item.courseNumber || 1} · Seat {item.seatNumber || 1} · {formatCurrency((item.quantity || 0) * (item.price || 0), currencyConfig)}
+                            </p>
+                            {item.specialInstructions ? (
+                              <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">{item.specialInstructions}</p>
+                            ) : null}
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => openEditItem(item)}
+                          >
+                            <Pencil size={11} className="mr-1" /> Edit
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Course control */}
               {selectedOrder && (
@@ -863,11 +1065,138 @@ export function ServiceFloorClient() {
                     <ChefHat size={12} className="mr-1.5" /> Open Order
                   </Button>
                 )}
+
+                {selectedOrder ? (
+                  <Button
+                    className="h-9 text-xs"
+                    variant="outline"
+                    onClick={() => updateCheckStatus(selectedOrder.id, 'mark_served')}
+                    disabled={!['ready', 'served'].includes(selectedOrder.status) || processingAction === 'check:mark_served'}
+                  >
+                    Mark Served
+                  </Button>
+                ) : (
+                  <Button className="h-9 text-xs" variant="outline" disabled>Mark Served</Button>
+                )}
+
+                {selectedOrder ? (
+                  <Button
+                    className="h-9 text-xs"
+                    variant="outline"
+                    onClick={() => updateCheckStatus(selectedOrder.id, 'close_check')}
+                    disabled={selectedOrder.status !== 'served' || getBalanceDue(selectedOrder) > 0 || processingAction === 'check:close_check'}
+                  >
+                    Close Paid Check
+                  </Button>
+                ) : (
+                  <Button className="h-9 text-xs" variant="outline" disabled>Close Paid Check</Button>
+                )}
+
+                {selectedOrder ? (
+                  <Button
+                    className="h-9 text-xs"
+                    variant="destructive"
+                    onClick={() => updateCheckStatus(selectedOrder.id, 'cancel_check')}
+                    disabled={['completed', 'cancelled'].includes(selectedOrder.status) || processingAction === 'check:cancel_check'}
+                  >
+                    Cancel Check
+                  </Button>
+                ) : (
+                  <Button className="h-9 text-xs" variant="destructive" disabled>Cancel Check</Button>
+                )}
               </div>
             </div>
           )}
         </SheetContent>
       </Sheet>
+
+      <Dialog open={Boolean(editingItem)} onOpenChange={(open) => !open && setEditingItem(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-base">Edit check item</DialogTitle>
+          </DialogHeader>
+          {editingItem ? (
+            <div className="space-y-4">
+              <div className="rounded-md border border-border bg-muted/30 p-3">
+                <p className="text-sm font-medium">{editingItem.menuItem?.name || 'Item'}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Current line total {formatCurrency((editingItem.quantity || 0) * (editingItem.price || 0), currencyConfig)}
+                </p>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Qty</p>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={editQuantity}
+                    onChange={e => setEditQuantity(Math.max(1, parseInt(e.target.value || '1', 10)))}
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div>
+                  <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Course</p>
+                  <Select value={String(editCourseNumber)} onValueChange={value => setEditCourseNumber(parseInt(value, 10))}>
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1" className="text-xs">1 · Apps</SelectItem>
+                      <SelectItem value="2" className="text-xs">2 · Mains</SelectItem>
+                      <SelectItem value="3" className="text-xs">3 · Dessert</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <p className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Seat</p>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={editSeatNumber}
+                    onChange={e => setEditSeatNumber(Math.max(1, parseInt(e.target.value || '1', 10)))}
+                    className="h-8 text-xs"
+                  />
+                </div>
+              </div>
+              <Textarea
+                value={editItemNotes}
+                onChange={e => setEditItemNotes(e.target.value)}
+                placeholder="Item notes, allergies, timing…"
+                className="min-h-20 text-xs"
+              />
+              <div className="rounded-md border border-destructive/20 bg-destructive/5 p-3 space-y-2">
+                <p className="text-[10px] uppercase tracking-wider text-destructive">Void item</p>
+                <Input
+                  value={voidReason}
+                  onChange={e => setVoidReason(e.target.value)}
+                  placeholder="Reason required to void"
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter className="gap-2 sm:justify-between">
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={voidEditItem}
+              disabled={!editingItem || !voidReason.trim() || processingAction === `void-item:${editingItem?.id}`}
+            >
+              <Trash2 size={13} className="mr-1" /> Void
+            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setEditingItem(null)}>Cancel</Button>
+              <Button
+                size="sm"
+                onClick={saveEditItem}
+                disabled={!editingItem || processingAction === `edit-item:${editingItem?.id}`}
+              >
+                Save changes
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }
